@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0"/>
+<title>NBA DFS Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:#111;color:#fff;font-family:system-ui,-apple-system,sans-serif;max-width:480px;margin:0 auto;padding-bottom:60px}
+select,input{background:#2a2a2a;color:#fff;border:1px solid #444;border-radius:8px;padding:8px 10px;font-size:14px;width:100%}
+input::placeholder{color:#888}
+.header{background:#1a1a1a;padding:12px 16px;border-bottom:1px solid #333;position:sticky;top:0;z-index:10}
+.header-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.header-title{color:#eab308;font-weight:700;font-size:13px}
+.refresh-btn{background:none;border:1px solid #444;border-radius:6px;color:#9ca3af;font-size:11px;padding:4px 10px;cursor:pointer}
+.row{display:flex;gap:8px;margin-top:8px}
+.row select,.row input{flex:1}
+.section{padding:14px 16px 0}
+.label{color:#e5e7eb;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px}
+.card{background:#1a1a1a;border-radius:10px;padding:12px 14px}
+.card-title{color:#eab308;font-weight:700;font-size:13px;margin-bottom:8px}
+.stats-strip{background:#1a1a1a;padding:10px 16px;border-bottom:1px solid #2a2a2a;overflow-x:auto}
+.stats-strip-inner{display:flex;gap:16px;min-width:max-content}
+.stat-item{text-align:center;min-width:40px}
+.stat-label{color:#d1d5db;font-size:9px;margin-bottom:2px;font-weight:600}
+.stat-val{color:#eab308;font-weight:700;font-size:13px}
+.bar-chart{display:flex;align-items:flex-end;gap:3px;height:90px}
+.bar-wrap{flex:1;display:flex;flex-direction:column;align-items:center}
+.bar-val{font-size:7px;color:#e5e7eb;margin-bottom:1px;font-weight:600}
+.bar{width:100%;border-radius:3px 3px 0 0;transition:height .3s,background .3s}
+.bar-date{font-size:7px;color:#d1d5db;margin-top:2px}
+.line-indicator{border-top:1px dashed #eab308;margin-top:2px;padding-top:2px;font-size:9px;color:#eab308}
+.avg-cards{display:flex;gap:8px}
+.avg-card{flex:1;background:#1a1a1a;border-radius:8px;padding:10px 4px;text-align:center}
+.avg-label{color:#d1d5db;font-size:9px;margin-bottom:4px}
+.avg-val{font-weight:700;font-size:15px}
+.split-row{display:flex;gap:8px}
+.split-card{flex:1;background:#1a1a1a;border-radius:10px;padding:12px}
+.split-title{color:#e5e7eb;font-size:10px;font-weight:600;margin-bottom:8px;display:block}
+.mini-bars-container{position:relative;height:70px;display:flex;gap:6px;align-items:flex-end}
+.mini-bar-wrap{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%}
+.mini-bar{width:100%;border-radius:3px 3px 0 0;flex-shrink:0}
+.mini-bar-label{font-size:8px;color:#d1d5db;margin-top:2px}
+.mini-bar-val{font-size:8px;color:#fff;font-weight:600;margin-top:1px}
+.vegas-row{display:flex;justify-content:space-between;margin-bottom:4px}
+.vegas-key{color:#d1d5db;font-size:12px}
+.vegas-val{color:#fff;font-size:12px;font-weight:600}
+.dk-line{font-size:16px;font-weight:800;color:#fff;margin-bottom:6px}
+.dk-odds{display:flex;justify-content:space-between;margin-bottom:8px}
+.hit-row{display:flex;justify-content:space-between;padding:4px 0;border-top:1px solid #333}
+.hit-key{color:#d1d5db;font-size:12px}
+.hit-val{color:#fff;font-size:12px;font-weight:600}
+.confidence{border-radius:10px;padding:14px;text-align:center}
+.conf-label{font-size:20px;font-weight:800}
+.conf-edge{color:#d1d5db;font-size:11px;margin-top:4px}
+.timestamp{text-align:center;padding:8px 16px;color:#9ca3af;font-size:10px}
+.loading{display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;gap:16px}
+@keyframes bounce{0%,100%{transform:translateY(0)}50%{transform:translateY(-12px)}}
+.error{padding:24px;color:#ef4444;font-size:14px}
+.no-data{color:#9ca3af;font-size:11px}
+.tab-bar{position:fixed;bottom:0;left:0;right:0;max-width:480px;margin:0 auto;background:#1a1a1a;border-top:1px solid #333;display:flex;z-index:20;padding-bottom:env(safe-area-inset-bottom)}
+.tab-btn{flex:1;padding:12px;text-align:center;font-size:10px;font-weight:600;color:#9ca3af;cursor:pointer;border:none;background:none}
+.tab-btn.active{color:#eab308;border-top:2px solid #eab308}
+.page{display:none}
+.page.active{display:block}
+.log-controls{padding:12px 16px}
+.log-table-wrap{overflow-x:auto;overflow-y:auto;max-height:calc(100vh - 180px);padding:0 16px 80px}
+table{width:100%;border-collapse:collapse;font-size:12px;min-width:500px}
+thead{position:sticky;top:0;z-index:5}
+th{background:#1a1a1a;color:#eab308;font-weight:700;padding:8px 6px;text-align:center;border-bottom:1px solid #333;white-space:nowrap}
+th.hl{background:#2a1f00}
+td{padding:7px 6px;text-align:center;color:#fff;border-bottom:1px solid #222;white-space:nowrap}
+td.hl{color:#eab308;font-weight:700}
+td.hit{color:#22c55e;font-weight:700}
+td.miss{color:#ef4444;font-weight:700}
+td.push{color:#9ca3af;font-weight:700}
+tr.win td{background:#0f2a1a}
+tr.loss td{background:#2a0f0f}
+.wl-w{color:#22c55e;font-weight:700}
+.wl-l{color:#ef4444;font-weight:700}
+.sub-tabs{display:flex;gap:4px;padding:8px 16px;overflow-x:auto}
+.sub-tab{padding:8px 14px;font-size:11px;font-weight:600;color:#9ca3af;background:#1a1a1a;border:1px solid #444;border-radius:20px;cursor:pointer;white-space:nowrap;flex-shrink:0}
+.sub-tab.active{color:#eab308;background:#eab30815;border-color:#eab308}
+.ai-pick-card{background:#1a1a1a;border-radius:10px;padding:12px 14px;margin:0 16px 8px;border-left:4px solid;cursor:pointer;transition:transform .15s,box-shadow .15s}
+.ai-pick-card:active{opacity:.7;transform:scale(.98)}
+.ai-rank{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;font-size:11px;font-weight:800;margin-right:8px;flex-shrink:0}
+.ai-pick-top{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+.ai-pick-player{font-weight:700;font-size:14px;display:flex;align-items:center}
+.ai-pick-meta{display:flex;justify-content:space-between;font-size:11px;color:#9ca3af;margin-bottom:4px}
+.ai-pick-rationale{font-size:11px;color:#d1d5db;font-style:italic}
+.ai-conf-smash{border-left-color:#22c55e}
+.ai-conf-over{border-left-color:#eab308}
+.ai-conf-fade,.ai-conf-under{border-left-color:#ef4444}
+.conf-tag{font-size:10px;font-weight:700;padding:2px 8px;border-radius:6px}
+.conf-tag-smash{background:#22c55e22;color:#22c55e}
+.conf-tag-over{background:#eab30822;color:#eab308}
+.conf-tag-fade,.conf-tag-under{background:#ef444422;color:#ef4444}
+.picks-summary{display:flex;gap:8px;padding:0 16px 8px}
+.ps-card{flex:1;background:#1a1a1a;border-radius:8px;padding:10px;text-align:center}
+.ps-val{font-size:18px;font-weight:800;color:#eab308}
+.ps-lbl{font-size:9px;color:#d1d5db;margin-top:2px}
+.bet-card{background:#1a1a1a;border-radius:10px;padding:12px 14px;margin:0 16px 8px;border-left:4px solid;cursor:pointer;transition:transform .15s,box-shadow .15s}
+.bet-card:active{opacity:.7}
+.streak-card{background:#1a1a1a;border-radius:10px;padding:12px 14px;margin:0 16px 8px;border-left:3px solid #444;position:relative;overflow:hidden;transition:transform .15s,box-shadow .15s}
+.streak-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;opacity:0}
+.streak-card.inferno{border-left-color:#ef4444}.streak-card.inferno::before{background:linear-gradient(90deg,transparent,rgba(239,68,68,.5),transparent);opacity:1}
+.streak-card.fire{border-left-color:#ff6b35}.streak-card.fire::before{background:linear-gradient(90deg,transparent,rgba(255,107,53,.4),transparent);opacity:1}
+.streak-card.hot{border-left-color:#eab308}.streak-card.hot::before{background:linear-gradient(90deg,transparent,rgba(234,179,8,.3),transparent);opacity:1}
+.streak-card.warm{border-left-color:#ffd966}
+.streak-top{display:flex;justify-content:space-between;align-items:flex-start}
+.streak-player{font-weight:700;font-size:14px}
+.streak-heat{font-size:9px;font-weight:700;padding:2px 7px;border-radius:10px;margin-left:6px;vertical-align:middle}
+.streak-count{font-size:26px;font-weight:800;line-height:1;text-align:right}
+.streak-count-label{font-size:8px;color:#9ca3af;text-transform:uppercase;letter-spacing:1px;text-align:right;font-weight:700;margin-top:1px}
+.streak-info{color:#d1d5db;font-size:11px;margin-top:4px}
+.streak-stats{display:flex;gap:8px;padding:8px 10px;background:rgba(0,0,0,.3);border-radius:8px;margin-top:8px;align-items:center;border:1px solid rgba(255,255,255,.03)}
+.streak-stat{flex:1;text-align:center}
+.streak-stat-label{font-size:8px;color:#9ca3af;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
+.streak-stat-val{font-size:13px;font-weight:700;margin-top:1px}
+.streak-stat-divider{border-left:1px solid rgba(255,255,255,.06);height:24px}
+.streak-chart{display:flex;align-items:flex-end;gap:2px;height:28px}
+.streak-chart-bar{border-radius:2px 2px 0 0;min-width:6px;flex:1}
+.streak-action{margin-top:8px}
+.streak-dash-btn{width:100%;padding:7px 0;border-radius:6px;border:1px solid #444;background:#1a1a1a;color:#d1d5db;font-size:11px;font-weight:600;cursor:pointer;text-align:center}
+.streak-dash-btn:active{background:#333}
+.streak-filters{display:flex;gap:6px;padding:0 16px 10px;overflow-x:auto}
+.sf-btn{padding:5px 10px;font-size:10px;font-weight:700;color:#9ca3af;background:#1a1a1a;border:1px solid #444;border-radius:14px;cursor:pointer;white-space:nowrap;flex-shrink:0}
+.sf-btn.active{color:#eab308;background:#eab30815;border-color:rgba(234,179,8,.4)}
+.draft-card{background:#1a1a1a;border-radius:10px;padding:10px 14px;margin:0 16px 6px;border-left:3px solid #444;display:flex;align-items:center;gap:10px;cursor:pointer;transition:transform .15s,box-shadow .15s,opacity .15s}
+.draft-card:active{transform:scale(.98)}
+.draft-card.drafted{opacity:.3;text-decoration:line-through}
+.draft-card.smash{border-left-color:#22c55e}
+.draft-card.tier1{border-left-color:#eab308}
+.draft-card.tier2{border-left-color:#3b82f6}
+.draft-card.tier3{border-left-color:#8b5cf6}
+.draft-rank{font-size:14px;font-weight:800;min-width:24px;text-align:center}
+.draft-main{flex:1;min-width:0}
+.draft-name{font-weight:700;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.draft-meta{font-size:10px;color:#9ca3af;margin-top:2px}
+.draft-tags{display:flex;gap:4px;flex-wrap:wrap;margin-top:3px}
+.draft-tag{font-size:8px;font-weight:700;padding:1px 5px;border-radius:4px}
+.draft-fp{text-align:right;min-width:50px}
+.draft-fp-val{font-size:18px;font-weight:800}
+.draft-fp-lbl{font-size:8px;color:#9ca3af}
+.draft-tier-label{padding:8px 16px 4px;font-size:11px;font-weight:700;letter-spacing:1px}
+.draft-controls{display:flex;gap:6px;padding:8px 16px;align-items:center}
+.draft-reset{background:none;border:1px solid #444;border-radius:6px;color:#9ca3af;font-size:10px;padding:4px 10px;cursor:pointer}
+.draft-count{font-size:10px;color:#9ca3af;flex:1;text-align:right}
+.props-filter{display:flex;gap:6px;padding:8px 16px;overflow-x:auto}
+.pf-btn{padding:6px 12px;font-size:11px;font-weight:600;color:#9ca3af;background:#1a1a1a;border:1px solid #444;border-radius:16px;cursor:pointer;white-space:nowrap;flex-shrink:0}
+.pf-btn.active{color:#eab308;background:#eab30815;border-color:#eab308}
+.props-tbl-wrap{overflow-x:auto;overflow-y:auto;max-height:50vh;padding:0 16px 16px}
+.props-tbl-wrap table{min-width:320px}
+.odds-over{color:#22c55e;font-weight:600}
+.odds-under{color:#ef4444;font-weight:600}
+.odds-even{color:#f59726;font-weight:600}
+
+/* ═══ DESKTOP TOP NAV (hidden on mobile) ═══ */
+.top-nav{display:none}
+.header-controls{display:flex;flex-direction:column;gap:8px;margin-top:8px}
+.cards-wrap{padding:0}
+.cards-grid{}
+.dash-grid{}
+
+/* ═══ Custom Scrollbars ═══ */
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:#111}
+::-webkit-scrollbar-thumb{background:#333;border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:#555}
+::-webkit-scrollbar-corner{background:#111}
+*{scrollbar-width:thin;scrollbar-color:#333 #111}
+
+/* ═══ TABLET+ (768px) ═══ */
+@media(min-width:768px){
+  body{max-width:1400px;padding-bottom:0}
+  .tab-bar{display:none}
+  .ai-pick-card:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,0.3)}
+  .bet-card:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,0.3)}
+  .streak-card:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,0.3)}
+  .draft-card:hover:not(.drafted){transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,0.3)}
+  .avg-card:hover{border-color:#eab308 !important;transition:border-color .15s}
+  .sub-tab:hover:not(.active){background:#1a1a1a;color:#d1d5db}
+  .pf-btn:hover:not(.active){background:#1a1a1a;color:#d1d5db}
+  .sf-btn:hover:not(.active){background:#1a1a1a;color:#d1d5db}
+  .top-nav{display:flex;gap:2px;align-items:center}
+  .top-nav .tab-btn{padding:8px 16px;font-size:13px;border-radius:8px;border:none;background:none;color:#9ca3af;cursor:pointer;font-weight:600;white-space:nowrap}
+  .top-nav .tab-btn:hover{background:#1a1a1a}
+  .top-nav .tab-btn.active{color:#eab308;background:#1a1a1a}
+  .header{padding:12px 24px;display:flex;flex-wrap:wrap;align-items:center;gap:12px}
+  .header-top{margin-bottom:0;margin-right:auto}
+  .header-controls{display:flex;align-items:center;gap:10px;width:100%;margin-top:8px;flex-direction:row}
+  .header-controls select,.header-controls input{width:auto;min-width:100px}
+  .header-controls #playerSelect{flex:1;max-width:300px}
+  .section{padding:16px 24px 0}
+  .stats-strip{padding:12px 24px}
+  .stats-strip-inner{gap:28px}
+  .stat-item{min-width:55px}
+  .stat-val{font-size:15px}
+  .stat-label{font-size:10px}
+  .bar-chart{height:130px;gap:5px}
+  .bar-val{font-size:9px}
+  .bar-date{font-size:9px}
+  .avg-card{padding:14px 10px}
+  .avg-val{font-size:18px}
+  .avg-label{font-size:11px}
+  .dash-grid{display:grid;grid-template-columns:1fr 1fr;gap:0 20px;padding:0 24px}
+  .dash-grid>.section{padding:16px 0 0}
+  .dash-full{grid-column:1/-1}
+  table{font-size:13px}
+  th,td{padding:8px 6px}
+  .log-table-wrap{padding:0 24px 24px;max-height:calc(100vh - 140px)}
+  .log-controls{padding:12px 24px;max-width:300px}
+  .ai-pick-card,.bet-card,.streak-card,.draft-card{margin:0 0 8px}
+  .cards-wrap{padding:0 24px}
+  .picks-summary{padding:0 24px 12px}
+  .sub-tabs{padding:8px 24px}
+  .props-filter{padding:8px 24px}
+  .props-tbl-wrap{padding:0 24px 16px;max-height:65vh}
+  .draft-controls{padding:6px 24px}
+  .draft-tier-label{padding:8px 24px 4px}
+  .streak-filters{padding:0 24px 10px}
+  .timestamp{padding:20px 24px}
+  .card{padding:16px 18px}
+  .split-card{padding:16px}
+  .confidence{padding:18px}
+}
+@media(min-width:1024px){
+  .header-controls{margin-top:0;width:auto;flex:1;justify-content:flex-end}
+  .cards-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .cards-grid .draft-tier-label{grid-column:1/-1}
+  .split-row{gap:16px}
+}
+@media(min-width:1400px){
+  .cards-grid{grid-template-columns:repeat(3,1fr)}
+  .header{padding:12px 32px}
+  .section{padding:16px 32px 0}
+  .dash-grid{padding:0 32px;gap:0 28px}
+}
+</style>
+</head>
+<body>
+<div id="app"><div class="loading"><div style="font-size:32px;animation:bounce .8s ease-in-out infinite">🏀</div><div style="color:#666;font-size:14px">Loading dashboard...</div></div></div>
+<script>
+const SHEET_ID="12gBgVx_RCsIytjZHjfZWgLtG-R-zcPbYYE-CVFd4EDw";
+const METRICS=["PTS","REB","AST","PRA","PR","PA","RA","FG3M","STOCKS","DK_FP","FPPM","USAGE_PPM"];
+let st={
+  tonight:[],playerStats:[],props:[],splits:[],aiPicks:[],
+  player:"",metric:"PTS",line:"",
+  activeTab:"dashboard",oppFilter:"",
+  picksView:"ai",propsMetric:"ALL",propsSearch:"",streakFilter:"all",streaks:[],drafted:new Set(),
+  loading:true,error:null,loadedAt:null
+};
+let cache={player:null,sortedLogs:null,bestBets:null};
+
+const toNum=v=>parseFloat(v)||0;
+const impliedProb=o=>{if(!o)return null;const v=parseFloat(o);if(v===0)return null;return v<0?Math.abs(v)/(Math.abs(v)+100):100/(v+100)};
+const fmtOdds=v=>{if(!v&&v!==0)return"—";v=parseInt(v);return v>0?`+${v}`:`${v}`};
+const barColor=(v,l)=>!l?"#eab308":v>l?"#22c55e":v===l?"#9ca3af":"#ef4444";
+const avgColor=(v,l)=>!l?"#eab308":v>=l?"#eab308":"#f97316";
+const esc=s=>String(s||"").replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+const CONF_LEVELS=[
+  {min_edge:.10,min_rate:.65,label:"SMASH",stars:5,color:"#22c55e"},
+  {min_edge:.05,min_rate:.60,label:"Strong Play",stars:4,color:"#86efac"},
+  {min_edge:.00,min_rate:.55,label:"Lean Over",stars:3,color:"#eab308"},
+  {min_edge:-.05,min_rate:0,label:"Neutral",stars:0,color:"#9ca3af"},
+];
+function getConfidence(sR,oI,e){
+  if(e===null||sR===null)return null;
+  for(const l of CONF_LEVELS)if(e>=l.min_edge&&sR>=l.min_rate){const s=l.stars>0?"⭐".repeat(l.stars)+" ":"⚪ ";return{label:s+l.label,stars:l.stars,color:l.color}}
+  return{label:"❌ PASS",stars:-1,color:"#ef4444"};
+}
+const fetchSheet=n=>new Promise((res,rej)=>{
+  fetch(`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(n)}`)
+  .then(r=>{if(!r.ok)throw new Error(r.status);return r.text()})
+  .then(t=>{Papa.parse(t,{header:true,skipEmptyLines:true,dynamicTyping:true,complete:r=>res(r.data),error:rej})})
+  .catch(rej);
+});
+
+function getPlayerLogs(name){
+  if(cache.player===name&&cache.sortedLogs)return cache.sortedLogs;
+  cache.player=name;
+  cache.sortedLogs=st.playerStats.filter(p=>p.PLAYER_NAME===name).sort((a,b)=>(b.GAME_DATE||"").localeCompare(a.GAME_DATE||""));
+  return cache.sortedLogs;
+}
+
+function computeBestBets(){
+  if(!st.props.length||!st.playerStats.length){cache.bestBets=[];return}
+  const logsByP={};st.playerStats.forEach(p=>{const n=p.PLAYER_NAME;if(!logsByP[n])logsByP[n]=[];logsByP[n].push(p)});
+  const plays=[];
+  st.props.forEach(prop=>{
+    if(!prop.DK_LINE||!prop.OVER_ODDS)return;
+    const ln=parseFloat(prop.DK_LINE),logs=logsByP[prop.PLAYER_NAME];
+    if(!logs||logs.length<5)return;
+    const sorted=logs.sort((a,b)=>(b.GAME_DATE||"").localeCompare(a.GAME_DATE||""));
+    const last=sorted[0]?.GAME_DATE||"";
+    if(last<new Date(Date.now()-10*864e5).toISOString().slice(0,10))return;
+    const hits=logs.filter(p=>toNum(p[prop.METRIC])>ln).length;
+    const sR=hits/logs.length,oI=impliedProb(prop.OVER_ODDS),e=sR-oI;
+    const c=getConfidence(sR,oI,e);
+    if(c&&c.stars>=4)plays.push({player:prop.PLAYER_NAME,metric:prop.METRIC,line:ln,odds:prop.OVER_ODDS,edge:e,conf:c});
+  });
+  plays.sort((a,b)=>b.edge-a.edge);
+  cache.bestBets=plays;
+}
+
+function getStreaks(){
+  const streaks=[];
+  const STREAK_TYPES=[
+    {key:"PTS",threshold:25,label:"Scoring Streak",emoji:"🔥",desc:"games w/ 25+ PTS"},
+    {key:"PTS",threshold:30,label:"Elite Scoring",emoji:"🔥🔥",desc:"games w/ 30+ PTS"},
+    {key:"PRA",threshold:30,label:"PRA Streak",emoji:"💎",desc:"games w/ 30+ PRA"},
+    {key:"PRA",threshold:40,label:"Stuffing Stats",emoji:"💎💎",desc:"games w/ 40+ PRA"},
+    {key:"AST",threshold:8,label:"Dime Streak",emoji:"🎯",desc:"games w/ 8+ AST"},
+    {key:"REB",threshold:10,label:"Board Streak",emoji:"💪",desc:"games w/ 10+ REB"},
+    {key:"FG3M",threshold:3,label:"Sniper Streak",emoji:"🎯",desc:"games w/ 3+ 3PM"},
+    {key:"FG3M",threshold:4,label:"Heat Check",emoji:"🎯🔥",desc:"games w/ 4+ 3PM"},
+    {key:"STOCKS",threshold:3,label:"Defensive Streak",emoji:"🛡️",desc:"games w/ 3+ STL+BLK"},
+    {key:"DK_FP",threshold:40,label:"Fantasy Streak",emoji:"⚡",desc:"games w/ 40+ DK FP"},
+  ];
+  const tonightNames=new Set(st.tonight.map(p=>p.PLAYER_NAME).filter(Boolean));
+  const tonightMap=new Map();
+  st.tonight.forEach(p=>{if(p.PLAYER_NAME)tonightMap.set(p.PLAYER_NAME,p)});
+  for(const sT of STREAK_TYPES){
+    for(const name of tonightNames){
+      const logs=getPlayerLogs(name);
+      if(logs.length<3)continue;
+      let streak=0;
+      for(const g of logs){if(toNum(g[sT.key])>=sT.threshold)streak++;else break}
+      if(streak<3)continue;
+      const pT=tonightMap.get(name)||{};
+      const recentVals=logs.slice(0,7).map(g=>toNum(g[sT.key]));
+      const avgDuring=logs.slice(0,streak).reduce((s,g)=>s+toNum(g[sT.key]),0)/streak;
+      const seasAvg=toNum(logs[0][`Seas_${sT.key}`]);
+      const prop=st.props.find(pr=>(pr.PLAYER_NAME||"")=== name&&pr.METRIC===sT.key);
+      streaks.push({player:name,team:pT.TEAM_ABBREVIATION||"",opp:pT.TONIGHT_OPP||"",stat:sT.key,threshold:sT.threshold,streak,label:sT.label,emoji:sT.emoji,desc:sT.desc,avgDuring:avgDuring.toFixed(1),seasAvg:seasAvg.toFixed(1),recentVals,dkLine:prop?prop.DK_LINE:null,overOdds:prop?parseInt(prop.OVER_ODDS)||null:null});
+    }
+  }
+  const best={};
+  for(const s of streaks){const k=`${s.player}|${s.stat}|${s.threshold}`;if(!best[k]||s.streak>best[k].streak)best[k]=s}
+  const result=Object.values(best);
+  result.sort((a,b)=>b.streak-a.streak);
+  return result;
+}
+
+function getStreakHeat(s){if(s>=10)return{label:"INFERNO",color:"#ef4444",cls:"inferno"};if(s>=6)return{label:"ON FIRE",color:"#ff6b35",cls:"fire"};if(s>=4)return{label:"HOT",color:"#eab308",cls:"hot"};return{label:"WARM",color:"#ffd966",cls:"warm"}}
+function streakMiniChart(vals,threshold){const max=Math.max(...vals,threshold+1);return vals.slice().reverse().map(v=>{const h=Math.max(3,(v/max)*26);return`<div class="streak-chart-bar" style="height:${h}px;background:${v>=threshold?'#22c55e':'#ef4444'};opacity:.85"></div>`}).join("")}
+
+function getAIConfClass(c){c=(c||"").toUpperCase();if(c==="SMASH")return"smash";if(c==="OVER")return"over";return"fade"}
+function getAIConfColor(c){c=(c||"").toUpperCase();if(c==="SMASH")return"#22c55e";if(c==="OVER")return"#eab308";return"#ef4444"}
+
+function switchTab(t){st.activeTab=t;render()}
+function setPicksView(v){st.picksView=v;render()}
+function setPropsMetric(m){st.propsMetric=m;render()}
+function setStreakFilter(f){st.streakFilter=f;render()}
+function toggleDrafted(name){if(st.drafted.has(name))st.drafted.delete(name);else st.drafted.add(name);render()}
+function resetDrafted(){st.drafted.clear();render()}
+
+function getDraftBoard(){
+  const board=[];
+  const aiMap=new Map();
+  st.aiPicks.forEach(p=>{if(p.player)aiMap.set(p.player,p)});
+  for(const p of st.tonight){
+    const name=p.PLAYER_NAME;if(!name)continue;
+    const logs=getPlayerLogs(name);
+    const most=logs[0]||{};
+    const seasPTS=toNum(most.Seas_PTS),seasREB=toNum(most.Seas_REB),seasAST=toNum(most.Seas_AST);
+    const seasSTL=toNum(most.Seas_STL),seasBLK=toNum(most.Seas_BLK),seasTOV=toNum(most.Seas_TOV);
+    const projUD=seasPTS*1.0+seasREB*1.2+seasAST*1.5+seasSTL*3.0+seasBLK*3.0+seasTOV*-1.0;
+    const l5PTS=toNum(most.L5_PTS),l5REB=toNum(most.L5_REB),l5AST=toNum(most.L5_AST);
+    const l5STL=toNum(most.L5_STL),l5BLK=toNum(most.L5_BLK),l5TOV=toNum(most.L5_TOV);
+    const l5UD=l5PTS*1.0+l5REB*1.2+l5AST*1.5+l5STL*3.0+l5BLK*3.0+l5TOV*-1.0;
+    const stocks=seasSTL+seasBLK;
+    const stocksBoost=(stocks*3.0)/(projUD||1);
+    const astBoost=(seasAST*1.5)/(projUD||1);
+    const aiPick=aiMap.get(name);
+    const isSmash=aiPick&&(aiPick.confidence||"").toUpperCase()==="SMASH";
+    const gameTotal=toNum(p.GAME_TOTAL);
+    board.push({name,team:p.TEAM_ABBREVIATION||"",opp:p.TONIGHT_OPP||"",projUD:projUD.toFixed(1),l5UD:l5UD.toFixed(1),seasPTS,seasREB,seasAST,stocks:stocks.toFixed(1),stocksBoost,astBoost,gameTotal,spread:p.SPREAD,isSmash,aiPick,gamesPlayed:logs.length});
+  }
+  board.sort((a,b)=>parseFloat(b.projUD)-parseFloat(a.projUD));
+  return board;
+}
+
+function streakToDash(name){window.scrollTo(0,0);st.player=name;st.activeTab="dashboard";st.oppFilter="";const p=st.props.find(pr=>pr.PLAYER_NAME===name&&pr.METRIC===st.metric);st.line=p?.DK_LINE||"";cache.player=null;render()}
+
+function render(){
+  const app=document.getElementById("app");
+  if(st.loading){app.innerHTML=`<div class="loading"><div style="font-size:32px;animation:bounce .8s ease-in-out infinite">🏀</div><div style="color:#666;font-size:14px">Loading dashboard...</div></div>`;return}
+  if(st.error){app.innerHTML=`<div class="error">⚠️ ${esc(st.error)}<br><br><button class="refresh-btn" id="retryBtn">Retry</button></div>`;document.getElementById("retryBtn")?.addEventListener("click",loadAllData);return}
+
+  const{tonight,props,splits,player,metric,line,activeTab,oppFilter,aiPicks,picksView}=st;
+  const lineNum=parseFloat(line)||0;
+  const pT=tonight.find(t=>t.PLAYER_NAME===player)||{};
+  const allLogs=getPlayerLogs(player);
+  const last10=allLogs.slice().reverse().slice(-10);
+  const most=allLogs[0]||{};
+  const prop=props.find(p=>p.PLAYER_NAME===player&&p.METRIC===metric)||{};
+  const split=splits.find(s=>s.PLAYER_NAME===player)||{};
+
+  const seasAvg=toNum(most[`Seas_${metric}`]),l10Avg=toNum(most[`L10_${metric}`]),l5Avg=toNum(most[`L5_${metric}`]),lastGame=toNum(most[metric]);
+  const h2hVal=toNum(pT[`H2H_${metric}`]),homeVal=toNum(split[`${metric}_Home`]),awayVal=toNum(split[`${metric}_Away`]);
+  const hL5=lineNum?allLogs.slice(0,5).filter(p=>toNum(p[metric])>lineNum).length:null;
+  const hL10=lineNum?allLogs.slice(0,10).filter(p=>toNum(p[metric])>lineNum).length:null;
+  const hS=lineNum?allLogs.filter(p=>toNum(p[metric])>lineNum).length:null;
+  const pushS=lineNum?allLogs.filter(p=>toNum(p[metric])===lineNum).length:null;
+  const npG=allLogs.length-(pushS||0);
+  const sRate=hS!==null&&npG>0?hS/npG:null;
+  const overOdds=prop.OVER_ODDS,underOdds=prop.UNDER_ODDS;
+  const overImpl=overOdds?impliedProb(overOdds):null,underImpl=underOdds?impliedProb(underOdds):null;
+  const edge=sRate!==null&&overImpl!==null?sRate-overImpl:null;
+  const conf=getConfidence(sRate,overImpl,edge);
+  const maxLog=Math.max(...last10.map(g=>toNum(g[metric])),lineNum||0,1);
+
+  const sortedP=[...tonight].sort((a,b)=>(a.PLAYER_NAME||"").localeCompare(b.PLAYER_NAME||""));
+  const playerOpts=sortedP.map(t=>`<option value="${esc(t.PLAYER_NAME||"")}" ${t.PLAYER_NAME===player?"selected":""}>${esc(t.PLAYER_NAME||"")} (${esc(t.TEAM_ABBREVIATION||"")})</option>`).join("");
+  const metricOpts=METRICS.map(m=>`<option value="${m}" ${m===metric?"selected":""}>${m}</option>`).join("");
+  const bars=last10.map(g=>{const v=toNum(g[metric]),h=Math.max(4,(v/maxLog)*80);return`<div class="bar-wrap"><div class="bar-val">${v}</div><div class="bar" style="height:${h}px;background:${barColor(v,lineNum)}"></div><div class="bar-date">${(g.GAME_DATE||"").slice(5)}</div></div>`}).join("");
+  const avgs=[{l:"Season",v:seasAvg},{l:"L10",v:l10Avg},{l:"L5",v:l5Avg},{l:"Last",v:lastGame}].map(a=>`<div class="avg-card" style="border:1px solid ${lineNum&&a.v>=lineNum?"#22c55e44":lineNum?"#ef444433":"#333"}"><div class="avg-label">${a.l}</div><div class="avg-val" style="color:${avgColor(a.v,lineNum)}">${a.v.toFixed(1)}</div></div>`).join("");
+
+  let h2hBars=`<div class="no-data">1st Meeting</div>`;
+  if(h2hVal>0){const mx=Math.max(h2hVal,seasAvg,.1);h2hBars=[{l:"H2H",v:h2hVal,c:"#3b82f6"},{l:"Season",v:seasAvg,c:"#22c55e"}].map(b=>`<div class="mini-bar-wrap"><div class="mini-bar" style="height:${Math.max(4,(b.v/mx)*60)}px;background:${b.c}"></div><div class="mini-bar-label">${b.l}</div><div class="mini-bar-val">${b.v.toFixed(1)}</div></div>`).join("")}
+
+  let hrBars=`<div class="no-data">No data</div>`;
+  if(homeVal>0||awayVal>0){const mx=Math.max(homeVal,awayVal,.1);hrBars=[{l:"Home",v:homeVal,c:"#8b5cf6"},{l:"Away",v:awayVal,c:"#06b6d4"}].map(b=>`<div class="mini-bar-wrap"><div class="mini-bar" style="height:${Math.max(4,(b.v/mx)*60)}px;background:${b.c}"></div><div class="mini-bar-label">${b.l}</div><div class="mini-bar-val">${b.v.toFixed(1)}</div></div>`).join("")}
+
+  const statStrip=["PTS","REB","AST","PRA","FG3M","STOCKS","DK_FP"].map(s=>`<div class="stat-item"><div class="stat-label">${s}</div><div class="stat-val">${toNum(most[`Seas_${s}`]).toFixed(1)}</div></div>`).join("");
+  const lastUp=most.LAST_UPDATED||pT.LAST_UPDATED||"—";
+
+  // Game Log
+  let logHTML="";
+  if(activeTab==="gamelog"){
+    const opps=[...new Set(allLogs.map(g=>g.GAME_OPP).filter(Boolean))].sort();
+    const oppOpts=`<option value="">All Opponents</option>`+opps.map(o=>`<option value="${esc(o)}" ${oppFilter===o?"selected":""}>${esc(o)}</option>`).join("");
+    const fLogs=oppFilter?allLogs.filter(g=>g.GAME_OPP===oppFilter):allLogs;
+    const cols=["MIN","PTS","REB","AST","FG3M","TOV","PRA","FGA","DK_FP"];
+    if(!cols.includes(metric))cols.push(metric);
+    const ths=cols.map(c=>`<th class="${c===metric?"hl":""}">${c}</th>`).join("");
+    const trs=fLogs.map(g=>{const w=(g.WL||"").toUpperCase()==="W";const cells=cols.map(c=>{const v=toNum(g[c]);let cls=c===metric?"hl":"";if(c===metric&&lineNum)cls=v>lineNum?"hit":v===lineNum?"push":"miss";return`<td class="${cls}">${v}</td>`}).join("");return`<tr class="${w?"win":"loss"}"><td>${(g.GAME_DATE||"").slice(5)}</td><td>${esc(g.GAME_OPP||"—")}</td><td class="${w?"wl-w":"wl-l"}">${g.WL||"—"}</td>${cells}</tr>`}).join("");
+    logHTML=`<div class="log-controls"><select id="oppFilter">${oppOpts}</select></div><div class="log-table-wrap"><table><thead><tr><th>DATE</th><th>OPP</th><th>W/L</th>${ths}</tr></thead><tbody>${trs}</tbody></table></div>`;
+  }
+
+  // ═══ PICKS TAB ═══
+  let picksHTML="";
+  if(activeTab==="picks"){
+    const subTabs=`<div class="sub-tabs" style="padding-top:12px">
+      <div class="sub-tab ${picksView==="ai"?"active":""}" onclick="setPicksView('ai')">🤖 AI Picks</div>
+      <div class="sub-tab ${picksView==="draft"?"active":""}" onclick="setPicksView('draft')">🏀 Draft</div>
+      <div class="sub-tab ${picksView==="streaks"?"active":""}" onclick="setPicksView('streaks')">🔥 Streaks</div>
+      <div class="sub-tab ${picksView==="stats"?"active":""}" onclick="setPicksView('stats')">📊 Stats Edge</div>
+      <div class="sub-tab ${picksView==="props"?"active":""}" onclick="setPicksView('props')">🎲 Props</div>
+    </div>`;
+
+    if(picksView==="ai"){
+      if(!aiPicks.length){picksHTML=subTabs+`<div class="no-data" style="padding:40px;text-align:center">No AI picks available. Run v8.4 first.</div>`}
+      else{
+        const smash=aiPicks.filter(p=>(p.confidence||"").toUpperCase()==="SMASH").length;
+        picksHTML=subTabs+`<div class="picks-summary"><div class="ps-card"><div class="ps-val">${aiPicks.length}</div><div class="ps-lbl">PICKS</div></div><div class="ps-card"><div class="ps-val">${smash}</div><div class="ps-lbl">SMASH</div></div></div>`;
+        picksHTML+=`<div class="cards-grid">`;
+        picksHTML+=aiPicks.map((pk,i)=>{
+          const cls=getAIConfClass(pk.confidence),clr=getAIConfColor(pk.confidence);
+          const rankBg=cls==="smash"?"#22c55e":cls==="over"?"#eab308":"#ef4444";
+          return`<div class="ai-pick-card ai-conf-${cls}" data-ai-idx="${i}">
+            <div class="ai-pick-top"><div class="ai-pick-player"><span class="ai-rank" style="background:${rankBg};color:#000">${pk.rank||i+1}</span>${esc(pk.player)}</div><span class="conf-tag conf-tag-${cls}">${esc(pk.confidence)}</span></div>
+            <div class="ai-pick-meta"><span>${esc(pk.lean)} ${pk.line} ${esc(pk.prop_type)}</span><span>${esc(pk.game)}</span></div>
+            <div class="ai-pick-rationale">${esc(pk.rationale)}</div>
+            ${pk.injury_context?`<div style="font-size:10px;color:#f97316;margin-top:3px">⚠️ ${esc(pk.injury_context)}</div>`:""}
+          </div>`;
+        }).join("");
+        picksHTML+=`</div>`;
+      }
+    }else if(picksView==="draft"){
+      const board=getDraftBoard();
+      const available=board.filter(p=>!st.drafted.has(p.name));
+      function getTier(proj){const v=parseFloat(proj);if(v>=45)return{label:"TIER 1 — Elite",cls:"tier1",color:"#eab308"};if(v>=38)return{label:"TIER 2 — Strong",cls:"tier2",color:"#3b82f6"};if(v>=30)return{label:"TIER 3 — Solid",cls:"tier3",color:"#8b5cf6"};if(v>=22)return{label:"TIER 4 — Role Player",cls:"",color:"#9ca3af"};return{label:"TIER 5 — Dart Throw",cls:"",color:"#666"}}
+      picksHTML=subTabs;
+      picksHTML+=`<div style="padding:12px 16px 4px;color:#eab308;font-size:13px;font-weight:700">🏀 Draft Cheat Sheet</div>
+      <div style="padding:0 16px 4px;color:#9ca3af;font-size:10px">Underdog scoring: PTS×1 REB×1.2 AST×1.5 STL×3 BLK×3 TOV×-1. Tap to mark as drafted.</div>
+      <div class="draft-controls"><button class="draft-reset" onclick="resetDrafted()">Reset Board</button><div class="draft-count">${st.drafted.size} drafted · ${available.length} available</div></div>`;
+      picksHTML+=`<div class="cards-grid">`;
+      let lastTier="";
+      board.forEach((p,i)=>{
+        const tier=getTier(p.projUD);const isDrafted=st.drafted.has(p.name);const tierChanged=tier.label!==lastTier;lastTier=tier.label;
+        let tags=[];
+        if(p.isSmash)tags.push(`<span class="draft-tag" style="background:#22c55e22;color:#22c55e">SMASH</span>`);
+        if(p.stocksBoost>=.20)tags.push(`<span class="draft-tag" style="background:#ef444422;color:#ef4444">🛡 STOCKS ${(p.stocksBoost*100).toFixed(0)}%</span>`);
+        if(p.astBoost>=.25)tags.push(`<span class="draft-tag" style="background:#3b82f622;color:#3b82f6">🎯 AST BOOST</span>`);
+        if(p.gameTotal>=230)tags.push(`<span class="draft-tag" style="background:#eab30822;color:#eab308">⚡ HIGH TOTAL</span>`);
+        if(parseFloat(p.l5UD)>parseFloat(p.projUD)*1.1)tags.push(`<span class="draft-tag" style="background:#22c55e22;color:#22c55e">📈 HOT</span>`);
+        const cardCls=`draft-card${isDrafted?" drafted":""}${p.isSmash&&!isDrafted?" smash":!isDrafted?" "+tier.cls:""}`;
+        picksHTML+=`${tierChanged?`<div class="draft-tier-label" style="color:${tier.color}">${tier.label}</div>`:""}
+        <div class="${cardCls}" onclick="toggleDrafted('${esc(p.name)}')">
+          <div class="draft-rank" style="color:${isDrafted?"#666":tier.color}">${i+1}</div>
+          <div class="draft-main"><div class="draft-name">${esc(p.name)}</div><div class="draft-meta">${esc(p.team)} vs ${esc(p.opp)} · ${p.seasPTS.toFixed(0)}p/${p.seasREB.toFixed(0)}r/${p.seasAST.toFixed(0)}a · STK: ${p.stocks}${p.gameTotal?` · O/U: ${p.gameTotal}`:""}</div>${tags.length?`<div class="draft-tags">${tags.join("")}</div>`:""}</div>
+          <div class="draft-fp"><div class="draft-fp-val" style="color:${isDrafted?"#666":tier.color}">${p.projUD}</div><div class="draft-fp-lbl">UD FP</div>${parseFloat(p.l5UD)!==parseFloat(p.projUD)?`<div style="font-size:9px;color:${parseFloat(p.l5UD)>parseFloat(p.projUD)?"#22c55e":"#ef4444"};margin-top:1px">L5: ${p.l5UD}</div>`:""}</div>
+        </div>`;
+      });
+      picksHTML+=`</div>`;
+    }else if(picksView==="streaks"){
+      const allStreaks=st.streaks;
+      const filters=[{k:"all",l:"All"},{k:"fire",l:"🔥 5+"},{k:"pts",l:"PTS"},{k:"pra",l:"PRA"},{k:"reb",l:"REB"},{k:"ast",l:"AST"},{k:"3pm",l:"3PM"}];
+      let filtered=allStreaks;
+      if(st.streakFilter==="fire")filtered=filtered.filter(s=>s.streak>=5);
+      if(st.streakFilter==="pts")filtered=filtered.filter(s=>s.stat==="PTS");
+      if(st.streakFilter==="pra")filtered=filtered.filter(s=>s.stat==="PRA");
+      if(st.streakFilter==="reb")filtered=filtered.filter(s=>s.stat==="REB");
+      if(st.streakFilter==="ast")filtered=filtered.filter(s=>s.stat==="AST");
+      if(st.streakFilter==="3pm")filtered=filtered.filter(s=>s.stat==="FG3M");
+      picksHTML=subTabs;
+      if(!allStreaks.length){picksHTML+=`<div class="no-data" style="padding:40px;text-align:center">No active streaks detected. Need game log data.</div>`}
+      else{
+        picksHTML+=`<div style="padding:12px 16px 4px;color:#eab308;font-size:13px;font-weight:700">🔥 Active Streaks</div>
+        <div style="padding:0 16px 8px;color:#9ca3af;font-size:10px">Auto-detected from game logs. Players on tonight's slate riding hot streaks.</div>
+        <div class="streak-filters">${filters.map(f=>`<div class="sf-btn ${st.streakFilter===f.k?"active":""}" onclick="setStreakFilter('${f.k}')">${f.l}</div>`).join("")}</div>
+        <div style="padding:0 16px;color:#9ca3af;font-size:10px;margin-bottom:6px">${filtered.length} active streak${filtered.length!==1?"s":""}</div>`;
+        picksHTML+=`<div class="cards-grid">`;
+        picksHTML+=filtered.map(s=>{
+          const heat=getStreakHeat(s.streak);
+          const chart=streakMiniChart(s.recentVals,s.threshold);
+          return`<div class="streak-card ${heat.cls}">
+            <div class="streak-top"><div style="flex:1"><div><span class="streak-player">${esc(s.player)}</span><span class="streak-heat" style="background:${heat.color}18;color:${heat.color};border:1px solid ${heat.color}35">${s.emoji} ${heat.label}</span></div><div class="streak-info">${esc(s.team)} vs ${esc(s.opp)}</div></div><div><div class="streak-count" style="color:${heat.color}">${s.streak}</div><div class="streak-count-label">${s.desc}</div></div></div>
+            <div class="streak-stats"><div class="streak-stat"><div class="streak-stat-label">Threshold</div><div class="streak-stat-val" style="color:#ffd966">${s.stat} ≥ ${s.threshold}</div></div><div class="streak-stat-divider"></div><div class="streak-stat"><div class="streak-stat-label">Avg During</div><div class="streak-stat-val" style="color:#22c55e">${s.avgDuring}</div></div><div class="streak-stat-divider"></div><div class="streak-stat"><div class="streak-stat-label">Season</div><div class="streak-stat-val" style="color:#bbb">${s.seasAvg}</div></div><div class="streak-stat-divider"></div><div><div class="streak-chart">${chart}</div></div></div>
+            ${s.dkLine!==null?`<div style="margin-top:6px;font-size:10px;color:#d1d5db">DK Line: ${s.dkLine} ${s.stat} · Over: ${s.overOdds?fmtOdds(s.overOdds):"—"}</div>`:""}
+            <div class="streak-action"><div class="streak-dash-btn" onclick="streakToDash('${esc(s.player)}')">📊 View Dashboard</div></div>
+          </div>`;
+        }).join("");
+        picksHTML+=`</div>`;
+      }
+    }else if(picksView==="stats"){
+      const bets=cache.bestBets||[];
+      picksHTML=subTabs;
+      if(!bets.length){picksHTML+=`<div class="no-data" style="padding:40px;text-align:center">No 4+ Star plays found at current lines.</div>`}
+      else{
+        picksHTML+=`<div class="section"><div class="label">Top Plays (4+ Stars)</div></div><div class="cards-grid">`;
+        picksHTML+=bets.map((p,i)=>`<div class="bet-card" style="border-left-color:${p.conf.color}" data-bet-idx="${i}">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px"><span style="font-weight:700">${esc(p.player)}</span><span style="color:#eab308;font-weight:700">Over ${p.line} ${p.metric}</span></div>
+          <div style="display:flex;justify-content:space-between;font-size:11px;color:#9ca3af"><span>Odds: ${fmtOdds(p.odds)}</span><span style="color:${p.conf.color}">${p.conf.label} (+${(p.edge*100).toFixed(1)}% Edge)</span></div>
+        </div>`).join("");
+        picksHTML+=`</div>`;
+      }
+    }else if(picksView==="props"){
+      const allM=[...new Set(st.props.map(p=>p.METRIC).filter(Boolean))].sort();
+      const fil=st.propsMetric==="ALL"?st.props:st.props.filter(p=>p.METRIC===st.propsMetric);
+      const srch=st.propsSearch?fil.filter(p=>(p.PLAYER_NAME||"").toLowerCase().includes(st.propsSearch.toLowerCase())):fil;
+      const sorted=[...srch].sort((a,b)=>(a.PLAYER_NAME||"").localeCompare(b.PLAYER_NAME||"")).slice(0,200);
+      picksHTML=subTabs+`
+      <div style="padding:8px 16px"><input type="text" id="propsSearchInput" placeholder="Search player..." value="${esc(st.propsSearch)}"/></div>
+      <div class="props-filter"><div class="pf-btn ${st.propsMetric==="ALL"?"active":""}" onclick="setPropsMetric('ALL')">All</div>${allM.map(m=>`<div class="pf-btn ${st.propsMetric===m?"active":""}" onclick="setPropsMetric('${m}')">${m}</div>`).join("")}</div>
+      <div style="padding:0 16px;color:#9ca3af;font-size:10px;margin-bottom:4px">${srch.length} props${srch.length>200?" (showing 200)":""}</div>
+      <div class="props-tbl-wrap"><table><thead><tr><th>Player</th><th>Prop</th><th>Line</th><th>Over</th><th>Under</th></tr></thead><tbody>${sorted.map(p=>`<tr><td style="text-align:left;font-weight:600">${esc(p.PLAYER_NAME)}</td><td><span style="color:#eab308;font-weight:600">${p.METRIC}</span></td><td style="font-weight:700">${p.DK_LINE}</td><td class="${parseInt(p.OVER_ODDS)<=-130?"odds-over":parseInt(p.OVER_ODDS)>=130?"odds-under":"odds-even"}">${fmtOdds(p.OVER_ODDS)}</td><td class="${parseInt(p.UNDER_ODDS)<=-130?"odds-over":parseInt(p.UNDER_ODDS)>=130?"odds-under":"odds-even"}">${fmtOdds(p.UNDER_ODDS)}</td></tr>`).join("")}</tbody></table></div>`;
+    }
+  }
+
+  // ═══ ASSEMBLE ═══
+  const showHeader=activeTab==="dashboard"||activeTab==="gamelog";
+  app.innerHTML=`
+  <div class="header">
+    <div class="header-top"><div class="header-title">🏀 NBA DFS Dashboard</div><button class="refresh-btn" id="refreshBtn">↻ Refresh</button></div>
+    <div class="top-nav">
+      <button class="tab-btn ${activeTab==="dashboard"?"active":""}" onclick="switchTab('dashboard')">📊 Dash</button>
+      <button class="tab-btn ${activeTab==="gamelog"?"active":""}" onclick="switchTab('gamelog')">📋 Log</button>
+      <button class="tab-btn ${activeTab==="picks"?"active":""}" onclick="switchTab('picks')">🔥 Picks</button>
+      <button class="tab-btn ${activeTab==="method"?"active":""}" onclick="switchTab('method')">ℹ️ Info</button>
+    </div>
+    ${showHeader?`<div class="header-controls"><select id="playerSelect">${playerOpts}</select>
+    <select id="metricSelect">${metricOpts}</select>
+    <input type="number" id="lineInput" value="${line}" placeholder="Line" step="0.5" inputmode="decimal"/></div>`:""}
+  </div>
+
+  <div class="page ${activeTab==="dashboard"?"active":""}">
+    <div class="stats-strip"><div class="stats-strip-inner">${statStrip}</div></div>
+    <div class="dash-grid">
+    <div class="section"><div class="label">Game Log — ${metric}</div><div class="bar-chart">${bars}</div>${lineNum?`<div class="line-indicator">Line: ${lineNum}</div>`:""}</div>
+    <div class="section"><div class="label">Averages</div><div class="avg-cards">${avgs}</div></div>
+    <div class="section"><div class="split-row">
+      <div class="split-card"><span class="split-title">H2H vs ${esc(pT.TONIGHT_OPP||"—")}</span><div class="mini-bars-container">${h2hBars}</div></div>
+      <div class="split-card"><span class="split-title">Home / Away</span><div class="mini-bars-container">${hrBars}</div></div>
+    </div></div>
+    <div class="section"><div class="card"><div class="card-title">⚡ Vegas</div>
+      <div class="vegas-row"><span class="vegas-key">${esc(pT.TEAM_ABBREVIATION||"—")} vs ${esc(pT.TONIGHT_OPP||"—")}</span><span style="color:#22c55e;font-size:12px;font-weight:600">${pT.SPREAD?`Spread: ${pT.SPREAD}`:"—"}</span></div>
+      <div class="vegas-row"><span class="vegas-key">Team Total</span><span class="vegas-val">${pT.IMPLIED_TOTAL||"—"}</span></div>
+      <div class="vegas-row"><span class="vegas-key">Opp Total</span><span class="vegas-val">${pT.OPP_IMPLIED_TOTAL||"—"}</span></div>
+      <div class="vegas-row"><span class="vegas-key">Game Total</span><span class="vegas-val">${pT.GAME_TOTAL||"—"}</span></div>
+    </div></div>
+    <div class="section"><div class="card"><div class="card-title">🎰 DK Props — ${metric}</div>
+      ${prop.DK_LINE?`<div class="dk-line">Line: ${prop.DK_LINE}</div><div class="dk-odds"><span style="color:#22c55e;font-size:12px">${overOdds?`Over: ${fmtOdds(overOdds)} (${(overImpl*100).toFixed(1)}%)`:"—"}</span><span style="color:#ef4444;font-size:12px">${underOdds?`Under: ${fmtOdds(underOdds)} (${(underImpl*100).toFixed(1)}%)`:"—"}</span></div>`:`<div class="no-data" style="margin-bottom:8px">No DK line available</div>`}
+      ${lineNum?`<div class="hit-row" style="border-top:1px solid #333;padding-top:8px;margin-top:4px"><span class="hit-key">L5</span><span class="hit-val">${hL5} / 5</span></div><div class="hit-row"><span class="hit-key">L10</span><span class="hit-val">${hL10} / 10</span></div><div class="hit-row"><span class="hit-key">Season</span><span class="hit-val">${hS} / ${allLogs.length} (${sRate!==null?(sRate*100).toFixed(0):"—"}%)${pushS>0?` · ${pushS} push`:""}</span></div>`:""}
+    </div></div>
+    ${conf?`<div class="section dash-full"><div class="confidence" style="background:${conf.color}22;border:2px solid ${conf.color}"><div class="conf-label" style="color:${conf.color}">${conf.label}</div>${edge!==null?`<div class="conf-edge">Edge: ${edge>0?"+":""}${(edge*100).toFixed(1)}% vs book</div>`:""}</div></div>`:""}
+    </div>
+    <div class="timestamp">Data: ${esc(lastUp)}${st.loadedAt?` · Loaded: ${st.loadedAt}`:""}</div>
+    <div class="timestamp" style="color:#555;font-size:9px;padding-top:0">Made by S. Krolikowski w/ Claude · 2026</div>
+  </div>
+
+  <div class="page ${activeTab==="gamelog"?"active":""}">${logHTML}</div>
+  <div class="page ${activeTab==="picks"?"active":""}">${picksHTML}</div>
+
+  <div class="page ${activeTab==="method"?"active":""}">
+    <div style="padding:16px">
+      <div style="text-align:center;margin-bottom:16px"><div style="font-size:28px;margin-bottom:4px">🏀</div><div style="color:#eab308;font-weight:800;font-size:16px">How This Dashboard Works</div><div style="color:#9ca3af;font-size:11px;margin-top:4px">A look under the hood of the NBA DFS Engine</div></div>
+      <div class="card" style="margin-bottom:10px"><div class="card-title">📡 Data Sources</div><div style="font-size:12px;color:#d1d5db;line-height:1.6"><div style="margin-bottom:6px"><span style="color:#eab308;font-weight:700">NBA API</span> — Player game logs, team advanced stats, and tonight's schedule pulled fresh every run for the 2025-26 season.</div><div style="margin-bottom:6px"><span style="color:#eab308;font-weight:700">The Odds API</span> — Live DraftKings spreads, game totals, and player props across 10+ markets (PTS, REB, AST, PRA, 3PM, etc.).</div><div><span style="color:#eab308;font-weight:700">Google Sheets</span> — Central data warehouse. The Python engine writes 7 tabs; this app and Tableau read from them live.</div></div></div>
+      <div class="card" style="margin-bottom:10px"><div class="card-title">⚙️ What Gets Calculated</div><div style="font-size:12px;color:#d1d5db;line-height:1.6"><div style="margin-bottom:6px"><span style="color:#eab308;font-weight:700">Rolling Averages</span> — L3, L5, L10, and Season for every metric. Surfaces whether a player is trending up or down vs their baseline.</div><div style="margin-bottom:6px"><span style="color:#eab308;font-weight:700">Head-to-Head</span> — Historical averages vs tonight's specific opponent.</div><div style="margin-bottom:6px"><span style="color:#eab308;font-weight:700">Home/Away Splits</span> — Full season splits by location.</div><div style="margin-bottom:6px"><span style="color:#eab308;font-weight:700">Teammate Correlations</span> — DK fantasy point correlation matrix across 2,000+ player pairs. Identifies stack and fade combos.</div><div style="margin-bottom:6px"><span style="color:#eab308;font-weight:700">FPPM &amp; Usage PPM</span> — Fantasy points per minute and usage per minute. Better efficiency indicators than raw totals.</div><div><span style="color:#eab308;font-weight:700">Implied Totals</span> — Derived from Vegas spreads and game totals. High implied totals signal more scoring opportunities.</div></div></div>
+      <div class="card" style="margin-bottom:10px"><div class="card-title">🤖 AI Daily Picks — Powered by Gemini</div><div style="font-size:12px;color:#d1d5db;line-height:1.6"><div style="margin-bottom:6px">Daily picks are generated by <span style="color:#eab308;font-weight:700">Google Gemini 2.5 Flash Lite</span>. The engine sends season + L5 rolling averages, opponent defensive ratings, pace, H2H history, implied totals, and live DraftKings prop lines for the top 80 active players.</div><div style="margin-bottom:6px"><span style="color:#eab308;font-weight:700">3-Layer Injury Filter:</span> (1) Players inactive 7+ days are removed before the prompt. (2) The prompt instructs Gemini to only pick from the provided list. (3) A post-filter removes any hallucinated players.</div><div>Gemini returns 14 ranked picks with confidence tiers (SMASH / OVER / FADE) and a short rationale for each.</div></div></div>
+      <div class="card" style="margin-bottom:10px"><div class="card-title">📊 Stats Edge System</div><div style="font-size:12px;color:#d1d5db;line-height:1.6"><div style="margin-bottom:6px">Independent of the AI picks. Compares each player's season hit rate on a prop vs the DraftKings implied probability.</div><div>Confidence tiers: SMASH (10%+ edge, 65%+ hit rate), Strong Play (5%+, 60%+), Lean Over (0%+, 55%+).</div></div></div>
+      <div class="card" style="margin-bottom:10px"><div class="card-title">🔥 Streak Detection</div><div style="font-size:12px;color:#d1d5db;line-height:1.6">Auto-scans all active players for sustained performance streaks (3+ games). Tracks PTS, PRA, AST, REB, 3PM, STL+BLK, and DK fantasy points. Heat labels: WARM → HOT → ON FIRE → INFERNO.</div></div>
+      <div class="card" style="margin-bottom:10px"><div class="card-title">🏗️ The Full Pipeline</div><div style="font-size:12px;color:#d1d5db;line-height:1.6"><div style="margin-bottom:6px"><span style="color:#eab308;font-weight:700">Python (Google Colab)</span> → fetches, cleans, calculates, and generates AI picks</div><div style="margin-bottom:6px"><span style="color:#eab308;font-weight:700">Google Sheets</span> → central data warehouse (7 tabs)</div><div style="margin-bottom:6px"><span style="color:#eab308;font-weight:700">Tableau</span> → desktop analytics dashboard</div><div><span style="color:#eab308;font-weight:700">GitHub Pages</span> → this mobile app, reads Sheets live via CSV</div></div></div>
+      <div class="card" style="margin-bottom:10px;border:1px solid #333"><div class="card-title">🙏 Credits</div><div style="font-size:12px;color:#d1d5db;line-height:1.6"><div style="margin-bottom:4px">Built by <span style="color:#eab308;font-weight:700">Stephen Krolikowski</span></div><div style="margin-bottom:4px">AI Picks powered by <span style="color:#eab308;font-weight:700">Google Gemini 2.5 Flash Lite</span></div><div style="margin-bottom:4px">App &amp; pipeline co-developed with <span style="color:#eab308;font-weight:700">Claude</span> by Anthropic</div><div style="margin-bottom:4px">Props &amp; odds via <span style="color:#eab308;font-weight:700">The Odds API</span> (DraftKings)</div><div>Player data via <span style="color:#eab308;font-weight:700">nba_api</span> (stats.nba.com)</div></div></div>
+      <div style="text-align:center;color:#555;font-size:9px;padding:8px 0 20px">For entertainment &amp; research purposes only. Not financial advice.</div>
+    </div>
+  </div>
+
+  <div class="tab-bar">
+    <button class="tab-btn ${activeTab==="dashboard"?"active":""}" onclick="switchTab('dashboard')">📊 Dash</button>
+    <button class="tab-btn ${activeTab==="gamelog"?"active":""}" onclick="switchTab('gamelog')">📋 Log</button>
+    <button class="tab-btn ${activeTab==="picks"?"active":""}" onclick="switchTab('picks')">🔥 Picks</button>
+    <button class="tab-btn ${activeTab==="method"?"active":""}" onclick="switchTab('method')">ℹ️ Info</button>
+  </div>`;
+
+  // Event listeners
+  document.getElementById("playerSelect")?.addEventListener("change",e=>{st.player=e.target.value;st.oppFilter="";const p=st.props.find(pr=>pr.PLAYER_NAME===st.player&&pr.METRIC===st.metric);st.line=p?.DK_LINE||"";cache.player=null;render()});
+  document.getElementById("metricSelect")?.addEventListener("change",e=>{st.metric=e.target.value;const p=st.props.find(pr=>pr.PLAYER_NAME===st.player&&pr.METRIC===st.metric);st.line=p?.DK_LINE||"";render()});
+  document.getElementById("lineInput")?.addEventListener("input",e=>{st.line=e.target.value;render()});
+  document.getElementById("refreshBtn")?.addEventListener("click",loadAllData);
+  document.getElementById("oppFilter")?.addEventListener("change",e=>{st.oppFilter=e.target.value;render()});
+  document.getElementById("propsSearchInput")?.addEventListener("input",e=>{st.propsSearch=e.target.value;render()});
+  document.querySelectorAll(".ai-pick-card[data-ai-idx]").forEach(c=>{c.addEventListener("click",()=>{const pk=aiPicks[parseInt(c.dataset.aiIdx)];if(pk){st.player=pk.player;st.metric=pk.prop_type||"PTS";st.line=String(pk.line||"");cache.player=null;switchTab("dashboard")}})});
+  document.querySelectorAll(".bet-card[data-bet-idx]").forEach(c=>{c.addEventListener("click",()=>{const p=cache.bestBets?.[parseInt(c.dataset.betIdx)];if(p){st.player=p.player;st.metric=p.metric;st.line=String(p.line);cache.player=null;switchTab("dashboard")}})});
+}
+
+function loadAllData(){
+  st.loading=true;st.error=null;cache.bestBets=null;cache.player=null;cache.sortedLogs=null;render();
+  Promise.all([
+    fetchSheet("Tonights_Opponent").catch(()=>null),
+    fetchSheet("Player_Stats").catch(()=>null),
+    fetchSheet("DK_Player_Props").catch(()=>[]),
+    fetchSheet("Home_Away_Splits").catch(()=>[]),
+    fetchSheet("Daily_Picks").catch(()=>[])
+  ]).then(([tonight,stats,props,splits,picks])=>{
+    if(!tonight||!stats){st.error="Could not load critical sheets.";st.loading=false;render();return}
+    st.tonight=tonight;st.playerStats=stats;st.props=props||[];st.splits=splits||[];
+    st.aiPicks=(picks||[]).sort((a,b)=>toNum(a.rank)-toNum(b.rank));
+    st.loading=false;st.loadedAt=new Date().toLocaleTimeString();
+    if(tonight.length>0&&!st.player){st.player=tonight[0].PLAYER_NAME||"";const p=st.props.find(pr=>pr.PLAYER_NAME===st.player&&pr.METRIC===st.metric);st.line=p?.DK_LINE||""}
+    computeBestBets();st.streaks=getStreaks();render();
+  }).catch(()=>{st.loading=false;st.error="Could not load data. Make sure your Google Sheet is set to 'Anyone with the link can view'.";render()});
+}
+loadAllData();
+</script>
+</body>
+</html>
