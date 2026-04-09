@@ -437,8 +437,8 @@ function render(){
     const cols=["MIN","PTS","REB","AST","FG3M","TOV","PRA","FGA","DK_FP"];
     if(!cols.includes(metric))cols.push(metric);
     const ths=cols.map(c=>`<th class="${c===metric?"hl":""}">${c}</th>`).join("");
-    const trs=fLogs.map(g=>{const w=(g.WL||"").toUpperCase()==="W";const cells=cols.map(c=>{const v=toNum(g[c]);let cls=c===metric?"hl":"";if(c===metric&&lineNum)cls=v>lineNum?"hit":v===lineNum?"push":"miss";return`<td class="${cls}">${v}</td>`}).join("");return`<tr class="${w?"win":"loss"}"><td>${(g.GAME_DATE||"").slice(5)}</td><td>${esc(g.GAME_OPP||"—")}</td><td class="${w?"wl-w":"wl-l"}">${g.WL||"—"}</td>${cells}</tr>`}).join("");
-    logHTML=`<div class="log-controls"><select id="oppFilter">${oppOpts}</select></div><div class="log-table-wrap"><table><thead><tr><th>DATE</th><th>OPP</th><th>W/L</th>${ths}</tr></thead><tbody>${trs}</tbody></table></div>`;
+    const trs=fLogs.map(g=>{const w=(g.WL||"").toUpperCase()==="W";const cells=cols.map(c=>{const v=toNum(g[c]);let cls=c===metric?"hl":"";if(c===metric&&lineNum)cls=v>lineNum?"hit":v===lineNum?"push":"miss";return`<td class="${cls}">${v}</td>`}).join("");const ha=(g.MATCHUP||"").includes("vs.")?"H":"A";return`<tr class="${w?"win":"loss"}"><td>${(g.GAME_DATE||"").slice(5)}</td><td>${esc(g.GAME_OPP||"—")}</td><td class="${w?"wl-w":"wl-l"}">${g.WL||"—"}</td><td>${ha}</td>${cells}</tr>`}).join("");
+    logHTML=`<div class="log-controls"><select id="oppFilter">${oppOpts}</select></div><div class="log-table-wrap"><table><thead><tr><th>DATE</th><th>OPP</th><th>W/L</th><th>H/A</th>${ths}</tr></thead><tbody>${trs}</tbody></table></div>`;
   }
 
   // ═══ PICKS TAB ═══
