@@ -722,7 +722,8 @@ function loadAllData(){
     const cleanPicks=normalizeKeys(cleanRows(picks||[]));
     const allDates=[...new Set(cleanPicks.map(p=>p.DATE).filter(Boolean))].sort();
     const latestDate=allDates.length?allDates[allDates.length-1]:"";
-    st.aiPicks=cleanPicks.filter(p=>(p.DATE||"")===latestDate).sort((a,b)=>toNum(a.rank)-toNum(b.rank));
+    const datePicks=cleanPicks.filter(p=>(p.DATE||"")===latestDate).sort((a,b)=>toNum(a.rank)-toNum(b.rank));
+    const seen=new Set();st.aiPicks=datePicks.filter(p=>{const k=(p.player||"").toLowerCase();if(seen.has(k))return false;seen.add(k);return true});
     st.loading=false;st.loadedAt=new Date().toLocaleTimeString();
     // Use robust player finder (ported from MLB)
     if(st.tonight.length>0&&!st.player){
