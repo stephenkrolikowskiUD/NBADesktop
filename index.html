@@ -346,7 +346,17 @@ function getBestBets(){
 
 // ═══ SMART SLIPS ═══
 function getConvictionLegs(){
-  const bets=getBestBets().filter(b=>b.edge>0);if(!bets.length)return[];
+  const SLIP_WORTHY=new Set(["PTS","REB","AST","PRA","PR","PA","RA","FG3M","DK_FP","STOCKS"]);
+  const bets=getBestBets().filter(b=>b.edge>0).filter(b=>{
+    // Filter out junk props: low lines on peripheral stats
+    if(!SLIP_WORTHY.has(b.metric))return false;
+    // No "under 0.5" or "under 1.5" on non-counting stats — not real picks
+    if(b.lean==="UNDER"&&parseFloat(b.dkLine)<=1.5&&["STOCKS","FG3M"].includes(b.metric))return false;
+    // Minimum line thresholds for meaningful parlays
+    if(b.metric==="PTS"&&parseFloat(b.dkLine)<5)return false;
+    if(b.metric==="PRA"&&parseFloat(b.dkLine)<10)return false;
+    return true;
+  });if(!bets.length)return[];
   const aiMap=new Map();st.aiPicks.forEach(pk=>{if(pk.player)aiMap.set(pk.player,pk)});
   const streakMap=new Map();try{st.streaks.forEach(s=>{streakMap.set(`${s.player}|${s.stat}`,s)})}catch(e){}
   const legs=[];
