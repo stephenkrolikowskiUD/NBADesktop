@@ -334,6 +334,7 @@ function getBestBets(){
   if(!st.props.length||!st.playerStats.length)return[];const bets=[];const tSet=new Set(st.tonight.map(p=>p.PLAYER_NAME).filter(Boolean));
   for(const p of st.props){const name=p.PLAYER_NAME;if(!name||!tSet.has(name))continue;const metric=p.METRIC;const line=parseFloat(p.DK_LINE);if(isNaN(line))continue;
     const MIN_LINES={STL:1.5,BLK:1.5,AST:2.5,TOV:1.5};if(MIN_LINES[metric]&&line<MIN_LINES[metric])continue;
+    if((metric==="STL"||metric==="BLK")&&lean==="UNDER")continue;
     const overO=parseInt(p.OVER_ODDS),underO=parseInt(p.UNDER_ODDS);if(isNaN(overO)&&isNaN(underO))continue;
     const hr=getHitRate(name,metric,line);if(!hr||hr.total<3)continue;
     const oIP=impliedProb(overO),uIP=impliedProb(underO);let oE=null,uE=null;if(oIP!==null)oE=hr.rate-oIP;if(uIP!==null)uE=(1-hr.rate)-uIP;
