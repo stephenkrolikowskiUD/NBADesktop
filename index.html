@@ -619,6 +619,20 @@ function render(){
         if(!slips.length)picksHTML+=`<div class="no-data" style="padding:20px;text-align:center">Not enough legs for ${st.slipLegs}-leg slips.</div>`;
         else picksHTML+=slips.map((s,i)=>{const best=i===0;return`<div class="slip-card ${best?"best":""}"><div class="slip-header"><span class="slip-rank">${best?"⭐ BEST":"#"+(i+1)} · ${st.slipLegs}-LEG</span><span class="slip-score">${s.score.toFixed(1)} pts</span></div><div class="slip-legs">${s.legs.map(l=>`<div class="slip-leg"><span class="slip-leg-team">${esc(l.team)}</span><span class="slip-leg-name">${esc(l.name)}</span><div class="slip-leg-prop"><span class="slip-leg-metric">${l.metric}</span><span class="slip-leg-lean ${l.lean.toLowerCase()}">${l.lean} ${l.dkLine}</span><span class="slip-leg-edge">+${(l.edge*100).toFixed(0)}%</span></div></div>`).join("")}</div>${s.legs.some(l=>l.signals.length)?`<div class="slip-tags">${[...new Set(s.legs.flatMap(l=>l.signals))].slice(0,4).map(sg=>`<span class="slip-tag">${sg}</span>`).join("")}</div>`:""}<div class="slip-meta"><span>Avg edge: +${(s.avgEdge*100).toFixed(1)}%</span><span>Avg hit: ${(s.avgHitRate*100).toFixed(0)}%</span><span>${s.teams.length} teams</span></div></div>`}).join("");
       }
+    }else if(picksView==="heaters"){
+      const heaters=getHeaters();picksHTML=subTabs;
+      if(!heaters.length)picksHTML+=`<div class="no-data" style="padding:40px;text-align:center">No heaters found. Need 5+ game logs and 40%+ hit rate on 3+ threes.</div>`;
+      else{
+        picksHTML+=`<div class="bet-summary"><div class="bs-card"><div class="bs-val">${heaters.length}</div><div class="bs-lbl">HEATERS</div></div><div class="bs-card"><div class="bs-val" style="color:#ef4444">${heaters.filter(h=>h.hitRate3>=0.6).length}</div><div class="bs-lbl">60%+ ON 3+</div></div><div class="bs-card"><div class="bs-val" style="color:#eab308">${heaters.filter(h=>h.trend>0).length}</div><div class="bs-lbl">L5 TRENDING UP</div></div><div class="bs-card"><div class="bs-val" style="color:#9ca3af">${heaters.filter(h=>h.dkProp).length}</div><div class="bs-lbl">HAS DK LINE</div></div></div>`;
+        picksHTML+=`<div style="padding:0 16px 4px;color:#9ca3af;font-size:10px">Volume 3-point shooters. Hit rate = games with 3+ FG3M made.</div><div class="cards-grid">`;
+        picksHTML+=heaters.map(h=>{
+          const r3=(h.hitRate3*100).toFixed(0),r4=(h.hitRate4*100).toFixed(0),r5=(h.hitRate5*100).toFixed(0);
+          const cls=h.hitRate3>=0.6?"elite":h.hitRate3>=0.5?"strong":"mid";
+          const trendStr=h.trend>0?`<span style="color:#22c55e">▲ L5 +${h.trend.toFixed(1)}</span>`:`<span style="color:#ef4444">▼ L5 ${h.trend.toFixed(1)}</span>`;
+          const dkStr=h.dkProp?`<span style="color:#eab308;font-size:11px">DK: FG3M ${h.dkProp.line} ${h.dkProp.over?fmtOdds(h.dkProp.over):""}</span>`:`<span style="color:#6b7280;font-size:11px">No DK line</span>`;
+          return`<div class="bet-card ${cls}" style="cursor:pointer;border-color:#f97316" onclick="heaterToDash('${esc(h.name)}')"><div class="bet-left"><div class="bet-name">${esc(h.name)}</div><div class="bet-meta">${esc(h.team)} vs ${esc(h.opp)} · ${h.total} games</div><div class="bet-prop">${dkStr} ${trendStr}</div><div class="bet-bar"><div class="bet-bar-fill" style="width:${r3}%;background:#f97316"></div></div><div style="display:flex;justify-content:space-between;margin-top:3px;font-size:9px;color:#9ca3af"><span>3+: ${r3}%</span><span>4+: ${r4}%</span><span>5+: ${r5}%</span></div></div><div class="bet-right"><div class="bet-edge pos" style="color:#f97316">${r3}%</div><div class="bet-sub">hit 3+</div></div></div>`;
+        }).join("")+`</div>`;
+  }
 
     }else if(picksView==="ai"){
       if(!aiPicks.length)picksHTML=subTabs+`<div class="no-data" style="padding:40px;text-align:center">No AI picks for today.</div>`;
