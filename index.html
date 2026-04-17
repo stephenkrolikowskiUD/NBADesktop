@@ -334,6 +334,8 @@ function getBestBets(){
   if(!st.props.length||!st.playerStats.length)return[];const bets=[];const tSet=new Set(st.tonight.map(p=>p.PLAYER_NAME).filter(Boolean));
   for(const p of st.props){const name=p.PLAYER_NAME;if(!name||!tSet.has(name))continue;const metric=p.METRIC;const line=parseFloat(p.DK_LINE);if(isNaN(line))continue;
     const overO=parseInt(p.OVER_ODDS),underO=parseInt(p.UNDER_ODDS);if(isNaN(overO)&&isNaN(underO))continue;
+    const MIN_LINES={STL:1.5,BLK:1.5,AST:2.5,TOV:1.5};if(MIN_LINES[metric]&&line<MIN_LINES[metric])continue;
+    const overO=parseInt(p.OVER_ODDS),underO=parseInt(p.UNDER_ODDS);if(isNaN(overO)&&isNaN(underO))continue;
     const hr=getHitRate(name,metric,line);if(!hr||hr.total<3)continue;
     const oIP=impliedProb(overO),uIP=impliedProb(underO);let oE=null,uE=null;if(oIP!==null)oE=hr.rate-oIP;if(uIP!==null)uE=(1-hr.rate)-uIP;
     let lean,edge,odds,ip,hitRate;
@@ -366,9 +368,9 @@ function getConvictionLegs(){
     if(ai){
       const c=(ai.confidence||"").toUpperCase();
       const aiLean=(ai.lean||"").toUpperCase();
-      const aiMetric=(ai.prop_type||"").toUpperCase();const betMetric=b.metric.toUpperCase();const aiComps=COMBO_STATS[aiMetric]||[aiMetric];const betComps=COMBO_STATS[betMetric]||[betMetric];const metricsRelated=betComps.every(c=>aiComps.includes(c));
-      if(metricsRelated && aiLean && aiLean!==b.lean)continue;
-      if(metricsRelated && aiLean===b.lean){aiAgrees=true;aiScore=c==="SMASH"?6:4}
+      const samePropType=(ai.prop_type||"").toUpperCase()===b.metric.toUpperCase();
+      if(samePropType && aiLean && aiLean!==b.lean)continue;
+      if(samePropType && aiLean===b.lean){aiAgrees=true;aiScore=c==="SMASH"?6:4}
       else{aiScore=c==="SMASH"?1.5:0.5}
     }
     let streakScore=0;const sk=streakMap.get(`${b.name}|${b.metric}`);if(sk){streakScore=sk.streak>=7?3:sk.streak>=5?2:1}
