@@ -362,14 +362,22 @@ function getConvictionLegs(){
   const legs=[];
   for(const b of bets){
     const evScore=Math.min(b.edge*40,10);let aiScore=0;
-    const ai=aiMap.get(b.name);if(ai){const c=(ai.confidence||"").toUpperCase();aiScore=c==="SMASH"?4:c==="OVER"?2:1;if((ai.prop_type||"").toUpperCase()===b.metric.toUpperCase())aiScore+=2}
+    const ai=aiMap.get(b.name);let aiAgrees=false;
+    if(ai){
+      const c=(ai.confidence||"").toUpperCase();
+      const aiLean=(ai.lean||"").toUpperCase();
+      const samePropType=(ai.prop_type||"").toUpperCase()===b.metric.toUpperCase();
+      if(samePropType && aiLean && aiLean!==b.lean)continue;
+      if(samePropType && aiLean===b.lean){aiAgrees=true;aiScore=c==="SMASH"?6:4}
+      else{aiScore=c==="SMASH"?1.5:0.5}
+    }
     let streakScore=0;const sk=streakMap.get(`${b.name}|${b.metric}`);if(sk){streakScore=sk.streak>=7?3:sk.streak>=5?2:1}
     const reliScore=Math.min(b.total/10,2),hrScore=b.hitRate>=0.8?2:b.hitRate>=0.65?1:0;
     const conviction=evScore+aiScore+streakScore+reliScore+hrScore;
-    let signals=[];if(ai){const c=(ai.confidence||"").toUpperCase();signals.push(c==="SMASH"?"🤖 SMASH":"🤖 AI")}
+    let signals=[];if(aiAgrees){const c=(ai.confidence||"").toUpperCase();signals.push(c==="SMASH"?"🤖 SMASH":"🤖 AI")}
     if(sk)signals.push(`🔥 ${sk.streak}G`);if(b.edge>=0.15)signals.push("💎 Elite");else if(b.edge>=0.08)signals.push("📈 Strong");
     if(b.hitRate>=0.8)signals.push(`✅ ${(b.hitRate*100).toFixed(0)}%`);
-    legs.push({...b,conviction,signals,hasAI:!!ai,hasStreak:!!sk});
+    legs.push({...b,conviction,signals,hasAI:aiAgrees,hasStreak:!!sk});
   }legs.sort((a,b)=>b.conviction-a.conviction);return legs;
 }
 function generateSlips(legs,n){
