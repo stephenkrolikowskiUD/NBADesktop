@@ -416,8 +416,8 @@ function renderPickGuard(guard){
 }
 
 const fetchSheet=n=>new Promise((res,rej)=>{
-  const url=`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&headers=1&sheet=${encodeURIComponent(n)}`;
-  fetch(url).then(r=>{
+  const url=`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&headers=1&sheet=${encodeURIComponent(n)}&cacheBust=${Date.now()}`;
+  fetch(url,{cache:"no-store"}).then(r=>{
     if(!r.ok){console.error(`❌ Sheet fetch failed: ${n} (${r.status})`);throw new Error(`Failed: ${n}`)}
     return r.text()
   }).then(t=>{
