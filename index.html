@@ -248,7 +248,7 @@ const toNum=v=>parseFloat(v)||0;
 const fmtOdds=v=>{if(!v&&v!==0)return"—";v=parseInt(v);return v>0?`+${v}`:`${v}`};
 const barColor=(v,l)=>!l?"#eab308":v>l?"#22c55e":v===l?"#9ca3af":"#ef4444";
 const avgColor=(v,l)=>!l?"#eab308":v>=l?"#eab308":"#f97316";
-const esc=s=>String(s||"").replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const esc=s=>String(s||"").replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 function impliedProb(odds){if(!odds&&odds!==0)return null;const o=parseInt(odds);if(isNaN(o))return null;return o<0?Math.abs(o)/(Math.abs(o)+100):100/(o+100)}
 
 // ═══ DATA CLEANING (ported from MLB) ═══
@@ -532,9 +532,11 @@ function heaterToDash(name){
 
 function getConvergenceBoard(){
   const board=new Map();
+  const allowed=new Set(st.aiPicks.map(p=>(p.player||"").toLowerCase()).filter(Boolean));
   const add=(name,source,boost=0,meta={})=>{
     if(!name)return;
     const key=name.toLowerCase();
+    if(allowed.size && !allowed.has(key))return;
     if(!board.has(key))board.set(key,{name,sources:new Set(),score:0,team:meta.team||"",opp:meta.opp||"",detail:""});
     const row=board.get(key);
     row.sources.add(source);
@@ -697,7 +699,7 @@ function render(){
           const dkStr=h.dkProp?`<span style="color:#eab308;font-size:11px">DK: FG3M ${h.dkProp.line} ${h.dkProp.over?fmtOdds(h.dkProp.over):""}</span>`:`<span style="color:#6b7280;font-size:11px">No DK line</span>`;
           return`<div class="bet-card ${cls}" style="cursor:pointer;border-color:#f97316" onclick="heaterToDash('${esc(h.name)}')"><div class="bet-left"><div class="bet-name">${esc(h.name)}</div><div class="bet-meta">${esc(h.team)} vs ${esc(h.opp)} · ${h.total} games</div><div class="bet-prop">${dkStr} ${trendStr}</div><div class="bet-bar"><div class="bet-bar-fill" style="width:${r3}%;background:#f97316"></div></div><div style="display:flex;justify-content:space-between;margin-top:3px;font-size:9px;color:#9ca3af"><span>3+: ${r3}%</span><span>4+: ${r4}%</span><span>5+: ${r5}%</span></div></div><div class="bet-right"><div class="bet-edge pos" style="color:#f97316">${r3}%</div><div class="bet-sub">hit 3+</div></div></div>`;
         }).join("")+`</div>`;
-  }
+      }
 
     }else if(picksView==="ai"){
       if(!aiPicks.length)picksHTML=picksIntro+`<div class="no-data" style="padding:40px;text-align:center">No AI picks for today.</div>`;
@@ -835,9 +837,10 @@ function loadAllData(){
     st.props=normalizeKeys(cleanRows(props||[]));
     st.splits=normalizeKeys(cleanRows(splits||[]));
     const cleanPicks=normalizeKeys(cleanRows(picks||[]));
+    const tonightNames=new Set(st.tonight.map(p=>(p.PLAYER_NAME||"").toLowerCase()).filter(Boolean));
     const allDates=[...new Set(cleanPicks.map(p=>p.DATE).filter(Boolean))].sort();
     const latestDate=allDates.length?allDates[allDates.length-1]:"";
-    const datePicks=cleanPicks.filter(p=>(p.DATE||"")===latestDate).sort((a,b)=>toNum(a.rank)-toNum(b.rank));
+    const datePicks=cleanPicks.filter(p=>(p.DATE||"")===latestDate).filter(p=>tonightNames.has((p.player||"").toLowerCase())).sort((a,b)=>toNum(a.rank)-toNum(b.rank));
     const seen=new Set();st.aiPicks=datePicks.filter(p=>{const k=(p.player||"").toLowerCase();if(seen.has(k))return false;seen.add(k);return true});
     st.loading=false;st.loadedAt=new Date().toLocaleTimeString();
     // Use robust player finder (ported from MLB)
