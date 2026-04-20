@@ -250,6 +250,26 @@ const barColor=(v,l)=>!l?"#eab308":v>l?"#22c55e":v===l?"#9ca3af":"#ef4444";
 const avgColor=(v,l)=>!l?"#eab308":v>=l?"#eab308":"#f97316";
 const esc=s=>String(s||"").replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 function impliedProb(odds){if(!odds&&odds!==0)return null;const o=parseInt(odds);if(isNaN(o))return null;return o<0?Math.abs(o)/(Math.abs(o)+100):100/(o+100)}
+function cleanName(v){return String(v||"").trim()}
+function normalizeDate(val){
+  const s=String(val||"").trim();
+  if(!s)return"";
+  if(/^\d{4}-\d{2}-\d{2}$/.test(s))return s;
+  if(/^\d{4}\/\d{2}\/\d{2}$/.test(s))return s.replace(/\//g,"-");
+  const mdy=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if(mdy){
+    const [,m,d,y]=mdy;
+    return `${y}-${String(m).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+  }
+  const parsed=new Date(s);
+  if(!Number.isNaN(parsed.getTime())){
+    const y=parsed.getFullYear();
+    const m=String(parsed.getMonth()+1).padStart(2,"0");
+    const d=String(parsed.getDate()).padStart(2,"0");
+    return `${y}-${m}-${d}`;
+  }
+  return s;
+}
 
 // ═══ DATA CLEANING (ported from MLB) ═══
 function cleanRows(rows){
@@ -288,19 +308,27 @@ function firstValidPlayer(arr){
   if(!arr||!arr.length)return "";
   for(let i=0;i<Math.min(arr.length,30);i++){
     const row=arr[i];if(!row)continue;
-    const n=row.PLAYER_NAME;
+    const n=cleanName(row.PLAYER_NAME);
     if(n&&String(n).trim().length>1)return String(n).trim();
   }
   const first=arr[0];if(!first)return "";
   const key=Object.keys(first).find(k=>k.replace(/[^a-zA-Z_]/g,'').toLowerCase()==="player_name"||k.includes("PLAYER_NAME"));
   if(key){
     for(let i=0;i<Math.min(arr.length,30);i++){
-      const v=arr[i]?.[key];
+      const v=cleanName(arr[i]?.[key]);
       if(v&&String(v).trim().length>1)return String(v).trim();
     }
   }
   console.warn("⚠️ Could not find PLAYER_NAME. Keys:",Object.keys(first).slice(0,5));
   return "";
+}
+function normalizePlayerName(name){
+  return cleanName(name)
+    .toLowerCase()
+    .replace(/['’`.]/g,"")
+    .replace(/\b(jr|sr|ii|iii|iv)\b/g,"")
+    .replace(/[^a-z0-9]+/g," ")
+    .trim();
 }
 
 const fetchSheet=n=>new Promise((res,rej)=>{
@@ -316,9 +344,9 @@ const fetchSheet=n=>new Promise((res,rej)=>{
   }).catch(rej)
 });
 
-function hasLogs(name){return st.playerStats.some(p=>p.PLAYER_NAME===name)}
+function hasLogs(name){const target=cleanName(name);return st.playerStats.some(p=>cleanName(p.PLAYER_NAME)===target)}
 
-function getPlayerLogs(name){if(cache.player===name&&cache.sortedLogs)return cache.sortedLogs;cache.player=name;cache.sortedLogs=st.playerStats.filter(p=>p.PLAYER_NAME===name).sort((a,b)=>(b.GAME_DATE||"").localeCompare(a.GAME_DATE||""));return cache.sortedLogs}
+function getPlayerLogs(name){const target=cleanName(name);if(cache.player===target&&cache.sortedLogs)return cache.sortedLogs;cache.player=target;cache.sortedLogs=st.playerStats.filter(p=>cleanName(p.PLAYER_NAME)===target).sort((a,b)=>(b.GAME_DATE||"").localeCompare(a.GAME_DATE||""));return cache.sortedLogs}
 
 // ═══ +EV ENGINE ═══
 function getHitRate(name,metric,line){
@@ -358,12 +386,12 @@ function getConvictionLegs(){
     if(b.metric==="PRA"&&parseFloat(b.dkLine)<10)return false;
     return true;
   });if(!bets.length)return[];
-  const aiMap=new Map();st.aiPicks.forEach(pk=>{if(pk.player)aiMap.set(pk.player,pk)});
-  const streakMap=new Map();try{st.streaks.forEach(s=>{streakMap.set(`${s.player}|${s.stat}`,s)})}catch(e){}
+  const aiMap=new Map();st.aiPicks.forEach(pk=>{const key=cleanName(pk.player||pk.PLAYER||pk.Player||pk.PLAYER_NAME);if(key)aiMap.set(key,pk)});
+  const streakMap=new Map();try{st.streaks.forEach(s=>{streakMap.set(`${cleanName(s.player)}|${s.stat}`,s)})}catch(e){}
   const legs=[];
   for(const b of bets){
     const evScore=Math.min(b.edge*40,10);let aiScore=0;
-    const ai=aiMap.get(b.name);let aiAgrees=false;
+    const ai=aiMap.get(cleanName(b.name));let aiAgrees=false;
     let aiConflictLevel="",aiDisagreementText="";
     if(ai){
       const c=(ai.confidence||"").toUpperCase();
@@ -380,7 +408,7 @@ function getConvictionLegs(){
       }else if(samePropType && aiLean===b.lean){aiAgrees=true;aiScore=c==="SMASH"?6:4}
       else{aiScore=c==="SMASH"?1.5:0.5}
     }
-    let streakScore=0;const sk=streakMap.get(`${b.name}|${b.metric}`);if(sk){streakScore=sk.streak>=7?3:sk.streak>=5?2:1}
+    let streakScore=0;const sk=streakMap.get(`${cleanName(b.name)}|${b.metric}`);if(sk){streakScore=sk.streak>=7?3:sk.streak>=5?2:1}
     const reliScore=Math.min(b.total/10,2),hrScore=b.hitRate>=0.8?2:b.hitRate>=0.65?1:0;
     const conviction=evScore+aiScore+streakScore+reliScore+hrScore;
     let signals=[];if(aiAgrees){const c=(ai.confidence||"").toUpperCase();signals.push(c==="SMASH"?"🤖 SMASH":"🤖 AI")}
@@ -531,6 +559,7 @@ function heaterToDash(name){
 }
 
 function getConvergenceBoard(){
+  if(!st.aiPicks.length)return[];
   const board=new Map();
   const allowed=new Set(st.aiPicks.map(p=>(p.player||"").toLowerCase()).filter(Boolean));
   const add=(name,source,boost=0,meta={})=>{
@@ -575,14 +604,14 @@ function renderConvergenceHTML(){
 }
 
 function getDraftBoard(){
-  const board=[];const aiMap=new Map();st.aiPicks.forEach(p=>{if(p.player)aiMap.set(p.player,p)});
+  const board=[];const aiMap=new Map();st.aiPicks.forEach(p=>{const key=cleanName(p.player||p.PLAYER||p.Player||p.PLAYER_NAME);if(key)aiMap.set(key,p)});
   for(const p of st.tonight){const name=p.PLAYER_NAME;if(!name)continue;const logs=getPlayerLogs(name);const most=logs[0]||{};
     const sP=toNum(most.Seas_PTS),sR=toNum(most.Seas_REB),sA=toNum(most.Seas_AST),sSt=toNum(most.Seas_STL),sB=toNum(most.Seas_BLK),sT=toNum(most.Seas_TOV);
     const proj=sP*1+sR*1.2+sA*1.5+sSt*3+sB*3+sT*-1;
     const l5P=toNum(most.L5_PTS),l5R=toNum(most.L5_REB),l5A=toNum(most.L5_AST),l5St=toNum(most.L5_STL),l5B=toNum(most.L5_BLK),l5T=toNum(most.L5_TOV);
     const l5=l5P*1+l5R*1.2+l5A*1.5+l5St*3+l5B*3+l5T*-1;
     const stocks=sSt+sB;const sb=(stocks*3)/(proj||1);const ab=(sA*1.5)/(proj||1);
-    const ai=aiMap.get(name);const isSmash=ai&&(ai.confidence||"").toUpperCase()==="SMASH";
+    const ai=aiMap.get(cleanName(name));const isSmash=ai&&(ai.confidence||"").toUpperCase()==="SMASH";
     board.push({name,team:p.TEAM_ABBREVIATION||"",opp:p.TONIGHT_OPP||"",projUD:proj.toFixed(1),l5UD:l5.toFixed(1),seasPTS:sP,seasREB:sR,seasAST:sA,stocks:stocks.toFixed(1),stocksBoost:sb,astBoost:ab,gameTotal:toNum(p.GAME_TOTAL),isSmash,gamesPlayed:logs.length});
   }board.sort((a,b)=>parseFloat(b.projUD)-parseFloat(a.projUD));return board;
 }
@@ -593,11 +622,11 @@ function render(){
   if(st.loading){app.innerHTML=`<div class="loading"><div style="font-size:32px;animation:bounce .8s ease-in-out infinite">🏀</div><div style="color:#666;font-size:14px">Loading dashboard...</div></div>`;return}
   if(st.error){app.innerHTML=`<div class="error">⚠️ ${esc(st.error)}<br><br><span style="color:#9ca3af;font-size:12px">Make sure your Google Sheet is set to "Anyone with the link can view"</span><br><br><button class="refresh-btn" id="retryBtn">Retry</button></div>`;document.getElementById("retryBtn")?.addEventListener("click",loadAllData);return}
   const{tonight,props,splits,player,metric,line,activeTab,oppFilter,aiPicks,picksView}=st;
-  const lineNum=parseFloat(line)||0;const pT=tonight.find(t=>t.PLAYER_NAME===player)||{};
+  const lineNum=parseFloat(line)||0;const pT=tonight.find(t=>cleanName(t.PLAYER_NAME)===cleanName(player))||{};
   const pHasLogs=hasLogs(player);
   const allLogs=getPlayerLogs(player);const last10=allLogs.slice().reverse().slice(-10);const most=allLogs[0]||{};
-  const prop=props.find(p=>p.PLAYER_NAME===player&&p.METRIC===metric)||{};
-  const split=splits.find(s=>s.PLAYER_NAME===player)||{};
+  const prop=props.find(p=>cleanName(p.PLAYER_NAME)===cleanName(player)&&p.METRIC===metric)||{};
+  const split=splits.find(s=>cleanName(s.PLAYER_NAME)===cleanName(player))||{};
 
   // Use combo-aware helpers for averages
   const seasAvg=getRollingVal(most,"Seas_",metric);
@@ -631,11 +660,11 @@ function render(){
   const earlyBanner=!pHasLogs&&player?`<div class="early-banner"><div class="icon">🌱</div><div class="msg">Early Season — No Game Logs Yet</div><div class="sub">${esc(player)} is on the active roster. Matchup info, props, and AI picks are available.</div></div>`:"";
 
   // Pick banner for dash
-  const dashPick=aiPicks.find(pk=>pk.player===player);
+  const dashPick=aiPicks.find(pk=>cleanName(pk.player||pk.PLAYER||pk.Player||pk.PLAYER_NAME)===cleanName(player));
   let pickBanner="";
   if(dashPick){const c=(dashPick.confidence||"").toUpperCase(),cls=getAIConfClass(c),accent=cls==="smash"?"#22c55e":cls==="strong"?"#eab308":"#ef4444";pickBanner=`<div class="section"><div class="card" style="border-left:3px solid ${accent}"><div class="card-title">🤖 AI Pick</div><div style="display:flex;align-items:center;gap:8px;margin-top:4px"><span class="prop-metric-tag">${dashPick.prop_type||""}</span><span style="font-weight:700;font-size:14px;color:${accent}">${dashPick.lean||""} ${dashPick.line||""}</span><span class="conf-tag conf-tag-${cls}">${c}</span></div><div style="font-size:11px;color:#d1d5db;font-style:italic;margin-top:4px">${esc(dashPick.rationale||"")}</div></div></div>`}
   // Dash props
-  const dashProps=props.filter(p=>p.PLAYER_NAME===player);
+  const dashProps=props.filter(p=>cleanName(p.PLAYER_NAME)===cleanName(player));
   let dashPropsHTML="";
   if(dashProps.length){dashPropsHTML=`<div class="section"><div class="label">🎲 DK Props</div>${dashProps.map(p=>`<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #222"><span><span class="prop-metric-tag" style="margin-right:6px">${p.METRIC}</span><strong>${p.DK_LINE}</strong></span><span><span style="color:#22c55e;font-size:11px;font-weight:600">O ${fmtOdds(p.OVER_ODDS)}</span> <span style="color:#ef4444;font-size:11px;font-weight:600;margin-left:8px">U ${fmtOdds(p.UNDER_ODDS)}</span></span></div>`).join("")}</div>`}
   // Game log
@@ -817,12 +846,12 @@ function render(){
   // ═══ EVENT LISTENERS ═══
   const dps=document.getElementById("dashPlayerSearch");
   if(dps)dps.addEventListener("change",e=>{if(e.target.value&&!_restoring)pickDashPlayer(e.target.value)});
-  document.getElementById("metricSelect")?.addEventListener("change",e=>{st.metric=e.target.value;const p=st.props.find(pr=>pr.PLAYER_NAME===st.player&&pr.METRIC===st.metric);st.line=p?.DK_LINE||"";render()});
+  document.getElementById("metricSelect")?.addEventListener("change",e=>{st.metric=e.target.value;const p=st.props.find(pr=>cleanName(pr.PLAYER_NAME)===cleanName(st.player)&&pr.METRIC===st.metric);st.line=p?.DK_LINE||"";render()});
   document.getElementById("lineInput")?.addEventListener("change",e=>{st.line=e.target.value;render()});
   document.getElementById("refreshBtn")?.addEventListener("click",loadAllData);
   document.getElementById("oppFilter")?.addEventListener("change",e=>{st.oppFilter=e.target.value;render()});
   document.getElementById("propsSearchInput")?.addEventListener("input",e=>{st.propsSearch=e.target.value;render()});
-  document.querySelectorAll(".ai-pick-card[data-ai-idx]").forEach(c=>{c.addEventListener("click",()=>{const pk=aiPicks[parseInt(c.dataset.aiIdx)];if(pk){st.player=pk.player;st.metric=pk.prop_type||"PTS";st.line=String(pk.line||"");cache.player=null;switchTab("dashboard")}})});
+  document.querySelectorAll(".ai-pick-card[data-ai-idx]").forEach(c=>{c.addEventListener("click",()=>{const pk=aiPicks[parseInt(c.dataset.aiIdx)];if(pk){st.player=cleanName(pk.player||pk.PLAYER||pk.Player||pk.PLAYER_NAME);st.metric=pk.prop_type||"PTS";st.line=String(pk.line||"");cache.player=null;switchTab("dashboard")}})});
   restoreFocus(focus);
 }
 
@@ -836,17 +865,22 @@ function loadAllData(){
     st.playerStats=normalizeKeys(cleanRows(stats));
     st.props=normalizeKeys(cleanRows(props||[]));
     st.splits=normalizeKeys(cleanRows(splits||[]));
-    const cleanPicks=normalizeKeys(cleanRows(picks||[]));
-    const tonightNames=new Set(st.tonight.map(p=>(p.PLAYER_NAME||"").toLowerCase()).filter(Boolean));
-    const allDates=[...new Set(cleanPicks.map(p=>p.DATE).filter(Boolean))].sort();
-    const latestDate=allDates.length?allDates[allDates.length-1]:"";
-    const datePicks=cleanPicks.filter(p=>(p.DATE||"")===latestDate).filter(p=>tonightNames.has((p.player||"").toLowerCase())).sort((a,b)=>toNum(a.rank)-toNum(b.rank));
-    const seen=new Set();st.aiPicks=datePicks.filter(p=>{const k=(p.player||"").toLowerCase();if(seen.has(k))return false;seen.add(k);return true});
+    const cleanPicks=normalizeKeys(cleanRows(picks||[])).map(p=>({...p,__pickPlayer:cleanName(p.player||p.PLAYER||p.Player||p.PLAYER_NAME),__normDate:normalizeDate(p.DATE||p.date||p.Date)}));
+    const tonightNames=new Set(st.tonight.map(p=>normalizePlayerName(p.PLAYER_NAME)).filter(Boolean));
+    const allDates=[...new Set(cleanPicks.map(p=>p.__normDate).filter(Boolean))].sort();
+    let latestDate="";
+    for(let i=allDates.length-1;i>=0;i--){
+      const d=allDates[i];
+      const overlap=cleanPicks.filter(p=>p.__normDate===d).filter(p=>tonightNames.has(normalizePlayerName(p.__pickPlayer))).length;
+      if(overlap>0){latestDate=d;break}
+    }
+    const datePicks=(latestDate?cleanPicks.filter(p=>p.__normDate===latestDate):[]).filter(p=>tonightNames.has(normalizePlayerName(p.__pickPlayer))).sort((a,b)=>toNum(a.rank)-toNum(b.rank));
+    const seen=new Set();st.aiPicks=datePicks.filter(p=>{const k=normalizePlayerName(p.__pickPlayer);if(!k||seen.has(k))return false;seen.add(k);return true}).map(({__pickPlayer,__normDate,...rest})=>rest);
     st.loading=false;st.loadedAt=new Date().toLocaleTimeString();
     // Use robust player finder (ported from MLB)
     if(st.tonight.length>0&&!st.player){
       st.player=firstValidPlayer(st.tonight);
-      const p=st.props.find(pr=>pr.PLAYER_NAME===st.player&&pr.METRIC===st.metric);
+      const p=st.props.find(pr=>cleanName(pr.PLAYER_NAME)===cleanName(st.player)&&pr.METRIC===st.metric);
       st.line=p?.DK_LINE||"";
     }
     console.log(`🚀 NBA Dashboard loaded — player:"${st.player}"`);
