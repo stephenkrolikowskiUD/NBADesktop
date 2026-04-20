@@ -223,7 +223,7 @@ tr.win td{background:#0f2a1a}tr.loss td{background:#2a0f0f}
 <div id="app"><div class="loading"><div style="font-size:32px;animation:bounce .8s ease-in-out infinite">🏀</div><div style="color:#666;font-size:14px">Loading dashboard...</div></div></div>
 <script>
 const SHEET_ID="12gBgVx_RCsIytjZHjfZWgLtG-R-zcPbYYE-CVFd4EDw";
-const METRICS=["PTS","REB","AST","PRA","PR","PA","RA","FG3M","STOCKS","UD_FP","FPPM","USAGE_PPM"];
+const METRICS=["PTS","REB","AST","STL","BLK","PRA","PR","PA","RA","FG3M","STOCKS","UD_FP","FPPM","USAGE_PPM"];
 
 // ═══ COMBO STAT SUPPORT (ported from MLB) ═══
 const COMBO_STATS={
@@ -242,8 +242,53 @@ function getRollingVal(row,prefix,m){
   return toNum(row[`${prefix}${m}`]);
 }
 
-let st={tonight:[],playerStats:[],props:[],splits:[],aiPicks:[],player:"",metric:"PTS",line:"",activeTab:"dashboard",oppFilter:"",picksView:"bets",propsMetric:"ALL",propsSearch:"",streakFilter:"all",dueFilter:"all",streaks:[],drafted:new Set(),slipLegs:"3",parlayStat:"PTS",loading:true,error:null,loadedAt:null};
+let st={tonight:[],playerStats:[],props:[],splits:[],aiPicks:[],player:"",metric:"PTS",line:"",activeTab:"dashboard",oppFilter:"",picksView:"bets",propsMetric:"ALL",propsSearch:"",streakFilter:"all",dueFilter:"all",streaks:[],drafted:new Set(),slipLegs:"3",parlayStat:"PTS",loading:true,error:null,loadedAt:null,latestPickDate:"",pickGuard:null,dataVersion:0};
 let cache={player:null,sortedLogs:null};
+let derived={
+  version:-1,
+  logsByName:new Map(),
+  propsByName:new Map(),
+  tonightByName:new Map(),
+  aiPicksByName:new Map(),
+  memo:new Map()
+};
+function resetDerived(){
+  derived={version:-1,logsByName:new Map(),propsByName:new Map(),tonightByName:new Map(),aiPicksByName:new Map(),memo:new Map()};
+}
+function indexRowsByName(rows,nameKey){
+  const map=new Map();
+  for(const row of rows||[]){
+    const key=normalizePlayerName(row?.[nameKey]);
+    if(!key)continue;
+    if(!map.has(key))map.set(key,[]);
+    map.get(key).push(row);
+  }
+  return map;
+}
+function ensureDerived(){
+  if(derived.version===st.dataVersion)return;
+  resetDerived();
+  derived.version=st.dataVersion;
+  derived.logsByName=indexRowsByName(st.playerStats,"PLAYER_NAME");
+  for(const logs of derived.logsByName.values())logs.sort((a,b)=>(b.GAME_DATE||"").localeCompare(a.GAME_DATE||""));
+  derived.propsByName=indexRowsByName(st.props,"PLAYER_NAME");
+  for(const row of st.tonight||[]){
+    const key=normalizePlayerName(row?.PLAYER_NAME);
+    if(key&&!derived.tonightByName.has(key))derived.tonightByName.set(key,row);
+  }
+  for(const row of st.aiPicks||[]){
+    const key=normalizePlayerName(row?.player||row?.PLAYER||row?.Player||row?.PLAYER_NAME);
+    if(key&&!derived.aiPicksByName.has(key))derived.aiPicksByName.set(key,row);
+  }
+}
+function getMemo(key,build){
+  ensureDerived();
+  const memoKey=`${st.dataVersion}:${key}`;
+  if(derived.memo.has(memoKey))return derived.memo.get(memoKey);
+  const value=build();
+  derived.memo.set(memoKey,value);
+  return value;
+}
 const toNum=v=>parseFloat(v)||0;
 const fmtOdds=v=>{if(!v&&v!==0)return"—";v=parseInt(v);return v>0?`+${v}`:`${v}`};
 const barColor=(v,l)=>!l?"#eab308":v>l?"#22c55e":v===l?"#9ca3af":"#ef4444";
@@ -338,6 +383,37 @@ function normalizeLeanText(lean){
   if(v==="FADE")return"UNDER";
   return v;
 }
+function normalizeConfidence(conf){
+  const v=cleanName(conf).toUpperCase();
+  return v==="SMASH"||v==="STRONG"||v==="LEAN"?v:"LEAN";
+}
+function aiAgreesWithBet(aiPick,betLikeObject){
+  if(!aiPick||!betLikeObject)return false;
+  return normalizePlayerName(aiPick.player||aiPick.PLAYER||aiPick.Player||aiPick.PLAYER_NAME)===normalizePlayerName(betLikeObject.name||betLikeObject.player)
+    && normalizePropName(aiPick.prop_type||aiPick.stat||aiPick.metric)===normalizePropName(betLikeObject.metric||betLikeObject.prop_type||betLikeObject.stat)
+    && normalizeLeanText(aiPick.lean)===normalizeLeanText(betLikeObject.lean);
+}
+function easternTodayISO(){
+  return new Date().toLocaleDateString('en-CA',{timeZone:'America/New_York'});
+}
+function getPickGuard(latestDate,picksCount){
+  if(!st.tonight.length)return null;
+  const today=easternTodayISO();
+  if(!picksCount){
+    return st.props.length
+      ?{level:"warn",text:"Engine issue — AI picks are missing or incomplete for tonight's slate."}
+      :{level:"info",text:"No AI picks for tonight yet. Props may still be loading."};
+  }
+  if(latestDate&&latestDate!==today)return{level:"warn",text:`Showing stale AI picks from ${latestDate}. Engine may be incomplete.`};
+  if(picksCount<3&&st.props.length>=20)return{level:"warn",text:`AI picks look incomplete for tonight (${picksCount} loaded).`};
+  return null;
+}
+function renderPickGuard(guard){
+  if(!guard)return"";
+  const border=guard.level==="warn"?"#f97316":"#64748b";
+  const text=guard.level==="warn"?"#fdba74":"#cbd5e1";
+  return `<div class="card" style="margin:0 16px 12px;border-left:3px solid ${border}"><div style="font-size:11px;color:${text};font-weight:600">${esc(guard.text)}</div></div>`;
+}
 
 const fetchSheet=n=>new Promise((res,rej)=>{
   const url=`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&headers=1&sheet=${encodeURIComponent(n)}`;
@@ -352,9 +428,16 @@ const fetchSheet=n=>new Promise((res,rej)=>{
   }).catch(rej)
 });
 
-function hasLogs(name){const target=cleanName(name);return st.playerStats.some(p=>cleanName(p.PLAYER_NAME)===target)}
+function hasLogs(name){ensureDerived();return (derived.logsByName.get(normalizePlayerName(name))||[]).length>0}
 
-function getPlayerLogs(name){const target=cleanName(name);if(cache.player===target&&cache.sortedLogs)return cache.sortedLogs;cache.player=target;cache.sortedLogs=st.playerStats.filter(p=>cleanName(p.PLAYER_NAME)===target).sort((a,b)=>(b.GAME_DATE||"").localeCompare(a.GAME_DATE||""));return cache.sortedLogs}
+function getPlayerLogs(name){
+  ensureDerived();
+  const target=normalizePlayerName(name);
+  if(cache.player===target&&cache.sortedLogs)return cache.sortedLogs;
+  cache.player=target;
+  cache.sortedLogs=derived.logsByName.get(target)||[];
+  return cache.sortedLogs;
+}
 
 // ═══ +EV ENGINE ═══
 function getHitRate(name,metric,line){
@@ -366,8 +449,8 @@ function getHitRate(name,metric,line){
   return{rate:hits/logs.length,hits,total:logs.length};
 }
 function getBestBets(){
-  if(!st.props.length||!st.playerStats.length)return[];const bets=[];const tSet=new Set(st.tonight.map(p=>cleanName(p.PLAYER_NAME)).filter(Boolean));
-  for(const p of st.props){const name=cleanName(p.PLAYER_NAME);if(!name||!tSet.has(name))continue;const metric=p.METRIC;const line=parseFloat(p.DK_LINE);if(isNaN(line))continue;
+  return getMemo("bestBets",()=>{if(!st.props.length||!st.playerStats.length)return[];const bets=[];const tSet=new Set(st.tonight.map(p=>normalizePlayerName(p.PLAYER_NAME)).filter(Boolean));
+  for(const p of st.props){const name=cleanName(p.PLAYER_NAME),nameKey=normalizePlayerName(p.PLAYER_NAME);if(!name||!nameKey||!tSet.has(nameKey))continue;const metric=p.METRIC;const line=parseFloat(p.DK_LINE);if(isNaN(line))continue;
     const MIN_LINES={STL:1.5,BLK:1.5,AST:2.5,TOV:1.5};if(MIN_LINES[metric]&&line<MIN_LINES[metric])continue;
     if(metric==="STL"||metric==="BLK")continue;
     const overO=parseInt(p.OVER_ODDS),underO=parseInt(p.UNDER_ODDS);if(isNaN(overO)&&isNaN(underO))continue;
@@ -376,9 +459,9 @@ function getBestBets(){
     let lean,edge,odds,ip,hitRate;
     if(oE!==null&&uE!==null){if(oE>=uE){lean="OVER";edge=oE;odds=overO;ip=oIP;hitRate=hr.rate}else{lean="UNDER";edge=uE;odds=underO;ip=uIP;hitRate=1-hr.rate}}
     else if(oE!==null){lean="OVER";edge=oE;odds=overO;ip=oIP;hitRate=hr.rate}else{lean="UNDER";edge=uE;odds=underO;ip=uIP;hitRate=1-hr.rate}
-    if(edge===null)continue;const pT=st.tonight.find(t=>cleanName(t.PLAYER_NAME)===name)||{};
+    if(edge===null)continue;const pT=derived.tonightByName.get(nameKey)||{};
     bets.push({name,metric,line,lean,edge,odds,impliedProb:ip,hitRate,hits:lean==="OVER"?hr.hits:hr.total-hr.hits,total:hr.total,team:pT.TEAM_ABBREVIATION||"",opp:pT.TONIGHT_OPP||"",dkLine:p.DK_LINE,overOdds:p.OVER_ODDS,underOdds:p.UNDER_ODDS});
-  }bets.sort((a,b)=>b.edge-a.edge);return bets;
+  }bets.sort((a,b)=>b.edge-a.edge);return bets;});
 }
 
 // ═══ SMART SLIPS ═══
@@ -394,15 +477,15 @@ function getConvictionLegs(){
     if(b.metric==="PRA"&&parseFloat(b.dkLine)<10)return false;
     return true;
   });if(!bets.length)return[];
-  const aiMap=new Map();st.aiPicks.forEach(pk=>{const key=cleanName(pk.player||pk.PLAYER||pk.Player||pk.PLAYER_NAME);if(key)aiMap.set(key,pk)});
-  const streakMap=new Map();try{st.streaks.forEach(s=>{streakMap.set(`${cleanName(s.player)}|${s.stat}`,s)})}catch(e){}
+  const aiMap=new Map();st.aiPicks.forEach(pk=>{const key=normalizePlayerName(pk.player||pk.PLAYER||pk.Player||pk.PLAYER_NAME);if(key)aiMap.set(key,pk)});
+  const streakMap=new Map();try{st.streaks.forEach(s=>{streakMap.set(`${normalizePlayerName(s.player)}|${normalizePropName(s.stat)}`,s)})}catch(e){}
   const legs=[];
   for(const b of bets){
     const evScore=Math.min(b.edge*40,10);let aiScore=0;
-    const ai=aiMap.get(cleanName(b.name));let aiAgrees=false;
+    const ai=aiMap.get(normalizePlayerName(b.name));let aiAgrees=false;
     let aiConflictLevel="",aiDisagreementText="";
     if(ai){
-      const c=(ai.confidence||"").toUpperCase();
+      const c=normalizeConfidence(ai.confidence);
       const aiLean=normalizeLeanText(ai.lean);
       const samePropType=normalizePropName(ai.prop_type)===normalizePropName(b.metric);
       if(samePropType && aiLean && aiLean!==b.lean){
@@ -413,13 +496,13 @@ function getConvictionLegs(){
         aiConflictLevel="soft";
         aiDisagreementText=`AI leans ${aiLean} ${ai.prop_type||""}`.trim();
         aiScore-=c==="SMASH"?1.5:0.75;
-      }else if(samePropType && aiLean===b.lean){aiAgrees=true;aiScore=c==="SMASH"?6:4}
+      }else if(aiAgreesWithBet(ai,b)){aiAgrees=true;aiScore=c==="SMASH"?6:4}
       else{aiScore=c==="SMASH"?1.5:0.5}
     }
-    let streakScore=0;const sk=streakMap.get(`${cleanName(b.name)}|${b.metric}`);if(sk){streakScore=sk.streak>=7?3:sk.streak>=5?2:1}
+    let streakScore=0;const sk=streakMap.get(`${normalizePlayerName(b.name)}|${normalizePropName(b.metric)}`);if(sk){streakScore=sk.streak>=7?3:sk.streak>=5?2:1}
     const reliScore=Math.min(b.total/10,2),hrScore=b.hitRate>=0.8?2:b.hitRate>=0.65?1:0;
     const conviction=evScore+aiScore+streakScore+reliScore+hrScore;
-    let signals=[];if(aiAgrees){const c=(ai.confidence||"").toUpperCase();signals.push(c==="SMASH"?"🤖 SMASH":"🤖 AI")}
+    let signals=[];if(aiAgrees){const c=normalizeConfidence(ai.confidence);signals.push(c==="SMASH"?"🤖 SMASH":"🤖 AI")}
     if(aiConflictLevel==="strong")signals.push("⚠️ AI conflict");
     else if(aiConflictLevel==="soft")signals.push("⚠️ AI cross-check");
     if(sk)signals.push(`🔥 ${sk.streak}G`);if(b.edge>=0.15)signals.push("💎 Elite");else if(b.edge>=0.08)signals.push("📈 Strong");
@@ -431,29 +514,29 @@ function generateSlips(legs,n){
   if(legs.length<n)return[];const slips=[];const maxIter=n<=3?500:300;
   function gen(s,cur,used,tc){if(cur.length===n){const sc=cur.reduce((s,l)=>s+l.conviction,0);slips.push({legs:cur.slice(),score:sc,avgEdge:cur.reduce((s,l)=>s+l.edge,0)/n,avgHitRate:cur.reduce((s,l)=>s+l.hitRate,0)/n,teams:[...new Set(cur.map(l=>l.team))],signalCount:cur.reduce((s,l)=>s+l.signals.length,0)});return}
     for(let i=s;i<pool.length&&slips.length<maxIter;i++){const l=pool[i];if(used.has(l.name))continue;const t=tc.get(l.team)||0;if(t>=2)continue;used.add(l.name);tc.set(l.team,t+1);cur.push(l);gen(i+1,cur,used,tc);cur.pop();used.delete(l.name);tc.set(l.team,t)}}
-  const seen=new Set();const dedupedLegs=legs.filter(l=>{const k=l.name.toLowerCase();if(seen.has(k))return false;seen.add(k);return true;});const pool=dedupedLegs.slice(0,n<=3?15:n<=4?18:20);
+  const seen=new Set();const dedupedLegs=legs.filter(l=>{const k=normalizePlayerName(l.name);if(seen.has(k))return false;seen.add(k);return true;});const pool=dedupedLegs.slice(0,n<=3?15:n<=4?18:20);
   gen(0,[],new Set(),new Map());slips.sort((a,b)=>b.score-a.score);
   const MAX_SLIPS=8;let selected=[];
   for(let cap=2;cap<=MAX_SLIPS;cap++){
     selected=[];const playerUsageCount=new Map();
     for(const slip of slips){
       if(selected.length>=MAX_SLIPS)break;
-      const overUsed=slip.legs.some(l=>(playerUsageCount.get(l.name.toLowerCase())||0)>=cap);
+      const overUsed=slip.legs.some(l=>(playerUsageCount.get(normalizePlayerName(l.name))||0)>=cap);
       if(overUsed)continue;
       selected.push(slip);
-      slip.legs.forEach(l=>{const n=l.name.toLowerCase();playerUsageCount.set(n,(playerUsageCount.get(n)||0)+1);});
+      slip.legs.forEach(l=>{const n=normalizePlayerName(l.name);playerUsageCount.set(n,(playerUsageCount.get(n)||0)+1);});
     }
     if(selected.length>=MAX_SLIPS)break;
   }
   return selected.slice(0,MAX_SLIPS);
 }
-function getSmartSlips(){const legs=getConvictionLegs();return{legs,slips3:generateSlips(legs,3),slips4:generateSlips(legs,4),slips5:generateSlips(legs,5)}}
+function getSmartSlips(){return getMemo("smartSlips",()=>{const legs=getConvictionLegs();return{legs,slips3:generateSlips(legs,3),slips4:generateSlips(legs,4),slips5:generateSlips(legs,5)}})}
 
 // ═══ THEY'RE DUE ═══
 function getDueBoard(){
-  const due=[];const tNames=new Set(st.tonight.map(p=>p.PLAYER_NAME).filter(Boolean));
+  return getMemo("dueBoard",()=>{const due=[];const tNames=[...new Set(st.tonight.map(p=>cleanName(p.PLAYER_NAME)).filter(Boolean))];
   const stats=["PTS","REB","AST","PRA","FG3M","UD_FP"];
-  for(const name of tNames){const logs=getPlayerLogs(name);if(logs.length<7)continue;const pT=st.tonight.find(t=>t.PLAYER_NAME===name)||{};const most=logs[0]||{};
+  for(const name of tNames){const logs=getPlayerLogs(name);if(logs.length<7)continue;const nameKey=normalizePlayerName(name);const pT=derived.tonightByName.get(nameKey)||{};const most=logs[0]||{};
     for(const stat of stats){
       const seasAvg=COMBO_STATS[stat]?getRollingVal(most,"Seas_",stat):toNum(most[`Seas_${stat}`]);
       const l5Avg=COMBO_STATS[stat]?getRollingVal(most,"L5_",stat):toNum(most[`L5_${stat}`]);
@@ -464,30 +547,30 @@ function getDueBoard(){
       const oppDef=toNum(pT.OPP_DEF_RTG);if(oppDef>=112){matchupScore+=3;matchupTags.push(`Weak D (${oppDef.toFixed(1)})`)}else if(oppDef>=110){matchupScore+=1.5;matchupTags.push(`Avg D (${oppDef.toFixed(1)})`)}
       const oppPace=toNum(pT.OPP_PACE);if(oppPace>=100){matchupScore+=2;matchupTags.push(`Fast (${oppPace.toFixed(1)})`)}else if(oppPace>=98){matchupScore+=1;matchupTags.push(`Avg pace`)}
       const gt=toNum(pT.GAME_TOTAL);if(gt>=230){matchupScore+=2;matchupTags.push(`High O/U: ${gt}`)}
-      const prop=st.props.find(pr=>pr.PLAYER_NAME===name&&pr.METRIC===stat);let propTag=null;
+      const prop=st.props.find(pr=>normalizePlayerName(pr.PLAYER_NAME)===nameKey&&normalizePropName(pr.METRIC)===normalizePropName(stat));let propTag=null;
       if(prop)propTag={line:prop.DK_LINE,overOdds:parseInt(prop.OVER_ODDS)||null};
       const totalScore=coldGap*15+Math.min(drought*1.5,10)+matchupScore;if(totalScore<5)continue;
       const recentVals=logs.slice(0,7).map(g=>getMetricVal(g,stat));
       due.push({name,team:pT.TEAM_ABBREVIATION||"",opp:pT.TONIGHT_OPP||"",stat,seasAvg:seasAvg.toFixed(1),l5Avg:l5Avg.toFixed(1),coldGap:(coldGap*100).toFixed(0),drought,matchupScore,matchupTags,propTag,recentVals,totalScore});
   }}
   const best={};for(const d of due){if(!best[d.name]||d.totalScore>best[d.name].totalScore)best[d.name]=d}
-  const result=Object.values(best);result.sort((a,b)=>b.totalScore-a.totalScore);return result;
+  const result=Object.values(best);result.sort((a,b)=>b.totalScore-a.totalScore);return result;});
 }
 function dueMiniChart(vals,sa){const mx=Math.max(...vals,sa+1);return vals.slice().reverse().map(v=>{const h=Math.max(3,(v/mx)*26);return`<div class="due-chart-bar" style="height:${h}px;background:${v>=sa?'#22c55e':'#38bdf8'};opacity:.85"></div>`}).join("")}
 
 // ═══ STREAKS ═══
 function getStreaks(){
-  const streaks=[];const TYPES=[{key:"PTS",threshold:25,label:"Scoring",emoji:"🔥",desc:"25+ PTS"},{key:"PTS",threshold:30,label:"Elite",emoji:"🔥🔥",desc:"30+ PTS"},{key:"PRA",threshold:30,label:"PRA",emoji:"💎",desc:"30+ PRA"},{key:"PRA",threshold:40,label:"Stuffing",emoji:"💎💎",desc:"40+ PRA"},{key:"AST",threshold:8,label:"Dimes",emoji:"🎯",desc:"8+ AST"},{key:"REB",threshold:10,label:"Boards",emoji:"💪",desc:"10+ REB"},{key:"FG3M",threshold:3,label:"Sniper",emoji:"🎯",desc:"3+ 3PM"},{key:"FG3M",threshold:4,label:"Heat Check",emoji:"🎯🔥",desc:"4+ 3PM"},{key:"STOCKS",threshold:3,label:"Defense",emoji:"🛡️",desc:"3+ STL+BLK"},{key:"UD_FP",threshold:40,label:"Fantasy",emoji:"⚡",desc:"40+ UD FP"}];
-  const tNames=new Set(st.tonight.map(p=>p.PLAYER_NAME).filter(Boolean));const tMap=new Map();st.tonight.forEach(p=>{if(p.PLAYER_NAME)tMap.set(p.PLAYER_NAME,p)});
+  return getMemo("streaks",()=>{const streaks=[];const TYPES=[{key:"PTS",threshold:25,label:"Scoring",emoji:"🔥",desc:"25+ PTS"},{key:"PTS",threshold:30,label:"Elite",emoji:"🔥🔥",desc:"30+ PTS"},{key:"PRA",threshold:30,label:"PRA",emoji:"💎",desc:"30+ PRA"},{key:"PRA",threshold:40,label:"Stuffing",emoji:"💎💎",desc:"40+ PRA"},{key:"AST",threshold:8,label:"Dimes",emoji:"🎯",desc:"8+ AST"},{key:"REB",threshold:10,label:"Boards",emoji:"💪",desc:"10+ REB"},{key:"FG3M",threshold:3,label:"Sniper",emoji:"🎯",desc:"3+ 3PM"},{key:"FG3M",threshold:4,label:"Heat Check",emoji:"🎯🔥",desc:"4+ 3PM"},{key:"STOCKS",threshold:3,label:"Defense",emoji:"🛡️",desc:"3+ STL+BLK"},{key:"UD_FP",threshold:40,label:"Fantasy",emoji:"⚡",desc:"40+ UD FP"}];
+  const tNames=[...new Set(st.tonight.map(p=>cleanName(p.PLAYER_NAME)).filter(Boolean))];const tMap=new Map();st.tonight.forEach(p=>{if(p.PLAYER_NAME)tMap.set(normalizePlayerName(p.PLAYER_NAME),p)});
   for(const sT of TYPES){for(const name of tNames){const logs=getPlayerLogs(name);if(logs.length<3)continue;let streak=0;
     for(const g of logs){if(getMetricVal(g,sT.key)>=sT.threshold)streak++;else break}if(streak<3)continue;
-    const pT=tMap.get(name)||{};const rv=logs.slice(0,7).map(g=>getMetricVal(g,sT.key));
+    const pT=tMap.get(normalizePlayerName(name))||{};const rv=logs.slice(0,7).map(g=>getMetricVal(g,sT.key));
     const ad=logs.slice(0,streak).reduce((s,g)=>s+getMetricVal(g,sT.key),0)/streak;
     const sa=COMBO_STATS[sT.key]?getRollingVal(logs[0],"Seas_",sT.key):toNum(logs[0][`Seas_${sT.key}`]);
-    const prop=st.props.find(pr=>(pr.PLAYER_NAME||"")===name&&pr.METRIC===sT.key);
+    const prop=st.props.find(pr=>normalizePlayerName(pr.PLAYER_NAME)===normalizePlayerName(name)&&normalizePropName(pr.METRIC)===normalizePropName(sT.key));
     streaks.push({player:name,team:pT.TEAM_ABBREVIATION||"",opp:pT.TONIGHT_OPP||"",stat:sT.key,threshold:sT.threshold,streak,label:sT.label,emoji:sT.emoji,desc:sT.desc,avgDuring:ad.toFixed(1),seasAvg:sa.toFixed(1),recentVals:rv,dkLine:prop?prop.DK_LINE:null,overOdds:prop?parseInt(prop.OVER_ODDS)||null:null});
   }}const best={};for(const s of streaks){const k=`${s.player}|${s.stat}|${s.threshold}`;if(!best[k]||s.streak>best[k].streak)best[k]=s}
-  const result=Object.values(best);result.sort((a,b)=>b.streak-a.streak);return result;
+  const result=Object.values(best);result.sort((a,b)=>b.streak-a.streak);return result;});
 }
 function getStreakHeat(s){if(s>=10)return{label:"INFERNO",color:"#ef4444",cls:"inferno"};if(s>=6)return{label:"ON FIRE",color:"#ff6b35",cls:"fire"};if(s>=4)return{label:"HOT",color:"#eab308",cls:"hot"};return{label:"WARM",color:"#ffd966",cls:"warm"}}
 function streakMiniChart(vals,thr){const mx=Math.max(...vals,thr+1);return vals.slice().reverse().map(v=>{const h=Math.max(3,(v/mx)*26);return`<div class="streak-chart-bar" style="height:${h}px;background:${v>=thr?'#22c55e':'#ef4444'};opacity:.85"></div>`}).join("")}
@@ -501,15 +584,15 @@ function setSlipLegs(n){st.slipLegs=n;render()}
 function setParlayStat(s){st.parlayStat=s;render()}
 function toggleDrafted(name){if(st.drafted.has(name))st.drafted.delete(name);else st.drafted.add(name);render()}
 function resetDrafted(){st.drafted.clear();render()}
-function pickDashPlayer(name){st.player=name;st.oppFilter="";const p=st.props.find(pr=>pr.PLAYER_NAME===st.player&&pr.METRIC===st.metric);st.line=p?.DK_LINE||"";cache.player=null;render()}
-function streakToDash(name){window.scrollTo(0,0);st.player=name;st.activeTab="dashboard";st.oppFilter="";const p=st.props.find(pr=>pr.PLAYER_NAME===name&&pr.METRIC===st.metric);st.line=p?.DK_LINE||"";cache.player=null;render()}
+function pickDashPlayer(name){st.player=name;st.oppFilter="";const p=st.props.find(pr=>normalizePlayerName(pr.PLAYER_NAME)===normalizePlayerName(st.player)&&normalizePropName(pr.METRIC)===normalizePropName(st.metric));st.line=p?.DK_LINE||"";cache.player=null;render()}
+function streakToDash(name){window.scrollTo(0,0);st.player=name;st.activeTab="dashboard";st.oppFilter="";const p=st.props.find(pr=>normalizePlayerName(pr.PLAYER_NAME)===normalizePlayerName(name)&&normalizePropName(pr.METRIC)===normalizePropName(st.metric));st.line=p?.DK_LINE||"";cache.player=null;render()}
 
 // ═══ STAT PARLAY ENGINE (ported from MLB) ═══
 function getStatParlayBoard(stat){
-  const rows=[];const tSet=new Set(st.tonight.map(p=>p.PLAYER_NAME).filter(Boolean));
+  return getMemo(`statParlay:${stat}`,()=>{const rows=[];const tSet=new Set(st.tonight.map(p=>normalizePlayerName(p.PLAYER_NAME)).filter(Boolean));
   for(const p of st.props){
-    const name=p.PLAYER_NAME;if(!name||!tSet.has(name))continue;
-    if(p.METRIC!==stat)continue;
+    const name=p.PLAYER_NAME,nameKey=normalizePlayerName(p.PLAYER_NAME);if(!name||!nameKey||!tSet.has(nameKey))continue;
+    if(normalizePropName(p.METRIC)!==normalizePropName(stat))continue;
     const dkLine=parseFloat(p.DK_LINE);if(isNaN(dkLine))continue;
     const overOdds=parseInt(p.OVER_ODDS),underOdds=parseInt(p.UNDER_ODDS);
     const logs=getPlayerLogs(name);if(logs.length<3)continue;const most=logs[0]||{};
@@ -521,7 +604,7 @@ function getStatParlayBoard(stat){
     const edge=overIP!==null?hitRate-overIP:0;
     const seasAvg=getRollingVal(most,"Seas_",stat);
     const l5Avg=getRollingVal(most,"L5_",stat);
-    const pT=st.tonight.find(t=>t.PLAYER_NAME===name)||{};
+    const pT=derived.tonightByName.get(nameKey)||{};
     let matchupScore=0;
     const oppDef=toNum(pT.OPP_DEF_RTG);if(oppDef>=112)matchupScore+=2;else if(oppDef>=110)matchupScore+=1;
     const oppPace=toNum(pT.OPP_PACE);if(oppPace>=100)matchupScore+=2;else if(oppPace>=98)matchupScore+=1;
@@ -529,7 +612,7 @@ function getStatParlayBoard(stat){
     const score=hitRate*40+Math.max(edge,0)*30+matchupScore*3+(l5Avg>seasAvg?5:0);
     rows.push({name,team:pT.TEAM_ABBREVIATION||"",opp:pT.TONIGHT_OPP||"",stat,dkLine,overOdds,underOdds,hitRate,hitsOver,total:logs.length,edge,seasAvg,l5Avg,matchupScore,score});
   }
-  rows.sort((a,b)=>b.score-a.score);return rows;
+  rows.sort((a,b)=>b.score-a.score);return rows;});
 }
 function getStatParlayCombos(board,legs){
   if(board.length<legs)return[];const combos=[];const pool=board.slice(0,legs<=2?12:15);
@@ -543,37 +626,37 @@ function getStatParlayCombos(board,legs){
 
 // ═══ HEATERS (volume 3-point shooters, prop-independent) ═══
 function getHeaters(){
-  const heaters=[];const tNames=new Set(st.tonight.map(p=>p.PLAYER_NAME).filter(Boolean));
+  return getMemo("heaters",()=>{const heaters=[];const tNames=[...new Set(st.tonight.map(p=>cleanName(p.PLAYER_NAME)).filter(Boolean))];
   for(const name of tNames){
     const logs=getPlayerLogs(name);
     if(logs.length<5)continue;
-    const pT=st.tonight.find(t=>t.PLAYER_NAME===name)||{};
+    const nameKey=normalizePlayerName(name);const pT=derived.tonightByName.get(nameKey)||{};
     const hits3=logs.filter(g=>toNum(g.FG3M)>=3).length;
     const hits4=logs.filter(g=>toNum(g.FG3M)>=4).length;
     const hits5=logs.filter(g=>toNum(g.FG3M)>=5).length;
     const hitRate3=hits3/logs.length,hitRate4=hits4/logs.length,hitRate5=hits5/logs.length;
     if(hitRate3<0.4)continue;
     const most=logs[0]||{};const seasAvg=toNum(most.Seas_FG3M),l5Avg=toNum(most.L5_FG3M);const trend=l5Avg-seasAvg;
-    const prop=st.props.find(pr=>pr.PLAYER_NAME===name&&pr.METRIC==="FG3M");
+    const prop=st.props.find(pr=>normalizePlayerName(pr.PLAYER_NAME)===nameKey&&normalizePropName(pr.METRIC)==="FG3M");
     const dkProp=prop?{line:prop.DK_LINE,over:parseInt(prop.OVER_ODDS)||null}:null;
     const score=hitRate3*40+hitRate4*30+hitRate5*20+Math.min(seasAvg,4)*3+(trend>0?5:0);
     heaters.push({name,team:pT.TEAM_ABBREVIATION||"",opp:pT.TONIGHT_OPP||"",hits3,hits4,hits5,total:logs.length,hitRate3,hitRate4,hitRate5,seasAvg,l5Avg,trend,dkProp,score});
   }
-  heaters.sort((a,b)=>b.score-a.score);return heaters;
+  heaters.sort((a,b)=>b.score-a.score);return heaters;});
 }
 function heaterToDash(name){
-  const s=st.tonight.find(t=>t.PLAYER_NAME===name);
+  const s=st.tonight.find(t=>normalizePlayerName(t.PLAYER_NAME)===normalizePlayerName(name));
   if(s){st.player=name;st.metric="FG3M";cache.player=null;st.activeTab="dashboard";render()}
 }
 
 function getConvergenceBoard(){
-  if(!st.aiPicks.length)return[];
+  return getMemo("convergenceBoard",()=>{if(!st.aiPicks.length)return[];
   const board=new Map();
-  const allowed=new Set(st.aiPicks.map(p=>cleanName(p.player||p.PLAYER||p.Player||p.PLAYER_NAME).toLowerCase()).filter(Boolean));
+  const allowed=new Set(st.aiPicks.map(p=>normalizePlayerName(p.player||p.PLAYER||p.Player||p.PLAYER_NAME)).filter(Boolean));
   const bestBetMap=new Map();
   const add=(name,source,boost=0,meta={})=>{
     if(!name)return;
-    const key=name.toLowerCase();
+    const key=normalizePlayerName(name);
     if(allowed.size && !allowed.has(key))return;
     if(!board.has(key))board.set(key,{name,sources:new Set(),score:0,team:meta.team||"",opp:meta.opp||"",detail:""});
     const row=board.get(key);
@@ -584,25 +667,21 @@ function getConvergenceBoard(){
     if(!row.detail&&meta.detail)row.detail=meta.detail;
   };
   getBestBets().filter(b=>b.edge>0).slice(0,20).forEach(b=>{
-    const key=cleanName(b.name);
+    const key=normalizePlayerName(b.name);
     if(!bestBetMap.has(key))bestBetMap.set(key,b);
     add(b.name,"Best Bets",2+Math.min(b.edge*20,3),{team:b.team,opp:b.opp,detail:`${b.lean} ${b.metric} ${b.dkLine}`});
   });
   st.aiPicks.forEach(pk=>{
-    const key=cleanName(pk.player||pk.PLAYER||pk.Player||pk.PLAYER_NAME);
+    const key=normalizePlayerName(pk.player||pk.PLAYER||pk.Player||pk.PLAYER_NAME);
     const bestBet=bestBetMap.get(key);
-    const aiMetric=normalizePropName(pk.prop_type);
-    const aiLean=normalizeLeanText(pk.lean);
-    const betMetric=normalizePropName(bestBet?.metric);
-    const betLean=normalizeLeanText(bestBet?.lean);
-    if(!bestBet || aiMetric!==betMetric || aiLean!==betLean)return;
-    const conf=(pk.confidence||"").toUpperCase();
+    if(!bestBet || !aiAgreesWithBet(pk,bestBet))return;
+    const conf=normalizeConfidence(pk.confidence);
     add(pk.player||pk.PLAYER||pk.Player||pk.PLAYER_NAME,"AI",conf==="SMASH"?4:conf==="STRONG"?3:2,{detail:`${pk.lean||""} ${pk.prop_type||""} ${pk.line||""}`.trim()});
   });
   getStreaks().slice(0,20).forEach(s=>add(s.player,"Streaks",s.streak>=7?3:s.streak>=5?2.5:2,{team:s.team,opp:s.opp,detail:`${s.streak}G ${s.stat}`}));
   getDueBoard().slice(0,20).forEach(d=>add(d.name,"Due",1.5+Math.min((d.totalScore||0)/12,2),{team:d.team,opp:d.opp,detail:`Due ${d.stat}`}));
   getHeaters().slice(0,15).forEach(h=>add(h.name,"Heaters",1.5+(h.hitRate3||0)*2,{team:h.team,opp:h.opp,detail:`${(h.hitRate3*100).toFixed(0)}% on 3+ 3PM`}));
-  return [...board.values()].map(r=>({...r,sourceCount:r.sources.size,sourceList:[...r.sources]})).filter(r=>r.sourceCount>=2).sort((a,b)=>b.sourceCount-a.sourceCount||b.score-a.score).slice(0,5);
+  return [...board.values()].map(r=>({...r,sourceCount:r.sources.size,sourceList:[...r.sources]})).filter(r=>r.sourceCount>=2).sort((a,b)=>b.sourceCount-a.sourceCount||b.score-a.score).slice(0,5);});
 }
 
 function renderConvergenceHTML(){
@@ -624,16 +703,16 @@ function renderConvergenceHTML(){
 }
 
 function getDraftBoard(){
-  const board=[];const aiMap=new Map();st.aiPicks.forEach(p=>{const key=cleanName(p.player||p.PLAYER||p.Player||p.PLAYER_NAME);if(key)aiMap.set(key,p)});
+  return getMemo("draftBoard",()=>{const board=[];const aiMap=new Map();st.aiPicks.forEach(p=>{const key=normalizePlayerName(p.player||p.PLAYER||p.Player||p.PLAYER_NAME);if(key)aiMap.set(key,p)});
   for(const p of st.tonight){const name=p.PLAYER_NAME;if(!name)continue;const logs=getPlayerLogs(name);const most=logs[0]||{};
     const sP=toNum(most.Seas_PTS),sR=toNum(most.Seas_REB),sA=toNum(most.Seas_AST),sSt=toNum(most.Seas_STL),sB=toNum(most.Seas_BLK),sT=toNum(most.Seas_TOV);
     const proj=sP*1+sR*1.2+sA*1.5+sSt*3+sB*3+sT*-1;
     const l5P=toNum(most.L5_PTS),l5R=toNum(most.L5_REB),l5A=toNum(most.L5_AST),l5St=toNum(most.L5_STL),l5B=toNum(most.L5_BLK),l5T=toNum(most.L5_TOV);
     const l5=l5P*1+l5R*1.2+l5A*1.5+l5St*3+l5B*3+l5T*-1;
     const stocks=sSt+sB;const sb=(stocks*3)/(proj||1);const ab=(sA*1.5)/(proj||1);
-    const ai=aiMap.get(cleanName(name));const isSmash=ai&&(ai.confidence||"").toUpperCase()==="SMASH";
+    const ai=aiMap.get(normalizePlayerName(name));const isSmash=ai&&normalizeConfidence(ai.confidence)==="SMASH";
     board.push({name,team:p.TEAM_ABBREVIATION||"",opp:p.TONIGHT_OPP||"",projUD:proj.toFixed(1),l5UD:l5.toFixed(1),seasPTS:sP,seasREB:sR,seasAST:sA,stocks:stocks.toFixed(1),stocksBoost:sb,astBoost:ab,gameTotal:toNum(p.GAME_TOTAL),isSmash,gamesPlayed:logs.length});
-  }board.sort((a,b)=>parseFloat(b.projUD)-parseFloat(a.projUD));return board;
+  }board.sort((a,b)=>parseFloat(b.projUD)-parseFloat(a.projUD));return board;});
 }
 
 function render(){
@@ -642,11 +721,11 @@ function render(){
   if(st.loading){app.innerHTML=`<div class="loading"><div style="font-size:32px;animation:bounce .8s ease-in-out infinite">🏀</div><div style="color:#666;font-size:14px">Loading dashboard...</div></div>`;return}
   if(st.error){app.innerHTML=`<div class="error">⚠️ ${esc(st.error)}<br><br><span style="color:#9ca3af;font-size:12px">Make sure your Google Sheet is set to "Anyone with the link can view"</span><br><br><button class="refresh-btn" id="retryBtn">Retry</button></div>`;document.getElementById("retryBtn")?.addEventListener("click",loadAllData);return}
   const{tonight,props,splits,player,metric,line,activeTab,oppFilter,aiPicks,picksView}=st;
-  const lineNum=parseFloat(line)||0;const pT=tonight.find(t=>cleanName(t.PLAYER_NAME)===cleanName(player))||{};
+  const lineNum=parseFloat(line)||0;const playerKey=normalizePlayerName(player);const pT=tonight.find(t=>normalizePlayerName(t.PLAYER_NAME)===playerKey)||{};
   const pHasLogs=hasLogs(player);
   const allLogs=getPlayerLogs(player);const last10=allLogs.slice().reverse().slice(-10);const most=allLogs[0]||{};
-  const prop=props.find(p=>cleanName(p.PLAYER_NAME)===cleanName(player)&&p.METRIC===metric)||{};
-  const split=splits.find(s=>cleanName(s.PLAYER_NAME)===cleanName(player))||{};
+  const prop=props.find(p=>normalizePlayerName(p.PLAYER_NAME)===playerKey&&normalizePropName(p.METRIC)===normalizePropName(metric))||{};
+  const split=splits.find(s=>normalizePlayerName(s.PLAYER_NAME)===playerKey)||{};
 
   // Use combo-aware helpers for averages
   const seasAvg=getRollingVal(most,"Seas_",metric);
@@ -680,11 +759,11 @@ function render(){
   const earlyBanner=!pHasLogs&&player?`<div class="early-banner"><div class="icon">🌱</div><div class="msg">Early Season — No Game Logs Yet</div><div class="sub">${esc(player)} is on the active roster. Matchup info, props, and AI picks are available.</div></div>`:"";
 
   // Pick banner for dash
-  const dashPick=aiPicks.find(pk=>cleanName(pk.player||pk.PLAYER||pk.Player||pk.PLAYER_NAME)===cleanName(player));
+  const dashPick=aiPicks.find(pk=>normalizePlayerName(pk.player||pk.PLAYER||pk.Player||pk.PLAYER_NAME)===playerKey);
   let pickBanner="";
-  if(dashPick){const c=(dashPick.confidence||"").toUpperCase(),cls=getAIConfClass(c),accent=cls==="smash"?"#22c55e":cls==="strong"?"#eab308":"#ef4444";pickBanner=`<div class="section"><div class="card" style="border-left:3px solid ${accent}"><div class="card-title">🤖 AI Pick</div><div style="display:flex;align-items:center;gap:8px;margin-top:4px"><span class="prop-metric-tag">${dashPick.prop_type||""}</span><span style="font-weight:700;font-size:14px;color:${accent}">${dashPick.lean||""} ${dashPick.line||""}</span><span class="conf-tag conf-tag-${cls}">${c}</span></div><div style="font-size:11px;color:#d1d5db;font-style:italic;margin-top:4px">${esc(dashPick.rationale||"")}</div></div></div>`}
+  if(dashPick){const c=normalizeConfidence(dashPick.confidence),cls=getAIConfClass(c),accent=cls==="smash"?"#22c55e":cls==="strong"?"#eab308":"#ef4444";pickBanner=`<div class="section"><div class="card" style="border-left:3px solid ${accent}"><div class="card-title">🤖 AI Pick</div><div style="display:flex;align-items:center;gap:8px;margin-top:4px"><span class="prop-metric-tag">${dashPick.prop_type||""}</span><span style="font-weight:700;font-size:14px;color:${accent}">${dashPick.lean||""} ${dashPick.line||""}</span><span class="conf-tag conf-tag-${cls}">${c}</span></div><div style="font-size:11px;color:#d1d5db;font-style:italic;margin-top:4px">${esc(dashPick.rationale||"")}</div></div></div>`}
   // Dash props
-  const dashProps=props.filter(p=>cleanName(p.PLAYER_NAME)===cleanName(player));
+  const dashProps=props.filter(p=>normalizePlayerName(p.PLAYER_NAME)===playerKey);
   let dashPropsHTML="";
   if(dashProps.length){dashPropsHTML=`<div class="section"><div class="label">🎲 DK Props</div>${dashProps.map(p=>`<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #222"><span><span class="prop-metric-tag" style="margin-right:6px">${p.METRIC}</span><strong>${p.DK_LINE}</strong></span><span><span style="color:#22c55e;font-size:11px;font-weight:600">O ${fmtOdds(p.OVER_ODDS)}</span> <span style="color:#ef4444;font-size:11px;font-weight:600;margin-left:8px">U ${fmtOdds(p.UNDER_ODDS)}</span></span></div>`).join("")}</div>`}
   // Game log
@@ -751,11 +830,12 @@ function render(){
       }
 
     }else if(picksView==="ai"){
-      if(!aiPicks.length)picksHTML=picksIntro+`<div class="no-data" style="padding:40px;text-align:center">No AI picks for today.</div>`;
-      else{const smash=aiPicks.filter(p=>(p.confidence||"").toUpperCase()==="SMASH").length;
-        picksHTML=picksIntro+`<div class="picks-summary"><div class="ps-card"><div class="ps-val">${aiPicks.length}</div><div class="ps-lbl">PICKS</div></div><div class="ps-card"><div class="ps-val">${smash}</div><div class="ps-lbl">SMASH</div></div></div><div class="cards-grid">`;
-        picksHTML+=aiPicks.map((pk,i)=>{const cls=getAIConfClass(pk.confidence),rb=cls==="smash"?"#22c55e":cls==="strong"?"#eab308":"#ef4444";
-          return`<div class="ai-pick-card ai-conf-${cls}" data-ai-idx="${i}"><div class="ai-pick-top"><div class="ai-pick-player"><span class="ai-rank" style="background:${rb};color:#000">${pk.rank||i+1}</span>${esc(pk.player)}</div><span class="conf-tag conf-tag-${cls}">${esc(pk.confidence)}</span></div><div class="ai-pick-meta"><span>${esc(pk.lean)} ${pk.line} ${esc(pk.prop_type)}</span><span>${esc(pk.game)}</span></div><div class="ai-pick-rationale">${esc(pk.rationale)}</div>${pk.injury_context?`<div style="font-size:10px;color:#f97316;margin-top:3px">⚠️ ${esc(pk.injury_context)}</div>`:""}</div>`}).join("")+`</div>`}
+      const pickGuard=st.pickGuard;
+      if(!aiPicks.length)picksHTML=picksIntro+renderPickGuard(pickGuard)+`<div class="no-data" style="padding:40px;text-align:center">No AI picks for today.</div>`;
+      else{const smash=aiPicks.filter(p=>normalizeConfidence(p.confidence)==="SMASH").length;
+        picksHTML=picksIntro+renderPickGuard(pickGuard)+`<div class="picks-summary"><div class="ps-card"><div class="ps-val">${aiPicks.length}</div><div class="ps-lbl">PICKS</div></div><div class="ps-card"><div class="ps-val">${smash}</div><div class="ps-lbl">SMASH</div></div></div><div class="cards-grid">`;
+        picksHTML+=aiPicks.map((pk,i)=>{const c=normalizeConfidence(pk.confidence),cls=getAIConfClass(c),rb=cls==="smash"?"#22c55e":cls==="strong"?"#eab308":"#ef4444";
+          return`<div class="ai-pick-card ai-conf-${cls}" data-ai-idx="${i}"><div class="ai-pick-top"><div class="ai-pick-player"><span class="ai-rank" style="background:${rb};color:#000">${pk.rank||i+1}</span>${esc(pk.player)}</div><span class="conf-tag conf-tag-${cls}">${esc(c)}</span></div><div class="ai-pick-meta"><span>${esc(pk.lean)} ${pk.line} ${esc(pk.prop_type)}</span><span>${esc(pk.game)}</span></div><div class="ai-pick-rationale">${esc(pk.rationale)}</div>${pk.injury_context?`<div style="font-size:10px;color:#f97316;margin-top:3px">⚠️ ${esc(pk.injury_context)}</div>`:""}</div>`}).join("")+`</div>`}
 
     }else if(picksView==="draft"){
       const board=getDraftBoard();const avail=board.filter(p=>!st.drafted.has(p.name));
@@ -866,17 +946,17 @@ function render(){
   // ═══ EVENT LISTENERS ═══
   const dps=document.getElementById("dashPlayerSearch");
   if(dps)dps.addEventListener("change",e=>{if(e.target.value&&!_restoring)pickDashPlayer(e.target.value)});
-  document.getElementById("metricSelect")?.addEventListener("change",e=>{st.metric=e.target.value;const p=st.props.find(pr=>cleanName(pr.PLAYER_NAME)===cleanName(st.player)&&pr.METRIC===st.metric);st.line=p?.DK_LINE||"";render()});
+  document.getElementById("metricSelect")?.addEventListener("change",e=>{st.metric=e.target.value;const p=st.props.find(pr=>normalizePlayerName(pr.PLAYER_NAME)===normalizePlayerName(st.player)&&normalizePropName(pr.METRIC)===normalizePropName(st.metric));st.line=p?.DK_LINE||"";render()});
   document.getElementById("lineInput")?.addEventListener("change",e=>{st.line=e.target.value;render()});
   document.getElementById("refreshBtn")?.addEventListener("click",loadAllData);
   document.getElementById("oppFilter")?.addEventListener("change",e=>{st.oppFilter=e.target.value;render()});
   document.getElementById("propsSearchInput")?.addEventListener("input",e=>{st.propsSearch=e.target.value;render()});
-  document.querySelectorAll(".ai-pick-card[data-ai-idx]").forEach(c=>{c.addEventListener("click",()=>{const pk=aiPicks[parseInt(c.dataset.aiIdx)];if(pk){st.player=cleanName(pk.player||pk.PLAYER||pk.Player||pk.PLAYER_NAME);st.metric=pk.prop_type||"PTS";st.line=String(pk.line||"");cache.player=null;switchTab("dashboard")}})});
+  document.querySelectorAll(".ai-pick-card[data-ai-idx]").forEach(c=>{c.addEventListener("click",()=>{const pk=aiPicks[parseInt(c.dataset.aiIdx)];if(pk){st.player=cleanName(pk.player||pk.PLAYER||pk.Player||pk.PLAYER_NAME);st.metric=cleanName(pk.prop_type||"PTS");st.line=String(pk.line||"");cache.player=null;switchTab("dashboard")}})});
   restoreFocus(focus);
 }
 
 function loadAllData(){
-  st.loading=true;st.error=null;cache.player=null;cache.sortedLogs=null;render();
+  st.loading=true;st.error=null;cache.player=null;cache.sortedLogs=null;resetDerived();render();
   Promise.all([fetchSheet("Tonights_Opponent").catch(()=>null),fetchSheet("Player_Stats").catch(()=>null),fetchSheet("DK_Player_Props").catch(()=>[]),fetchSheet("Home_Away_Splits").catch(()=>[]),fetchSheet("Daily_Picks").catch(()=>[])])
   .then(([tonight,stats,props,splits,picks])=>{
     if(!tonight||!stats){st.error="Could not load critical sheets.";st.loading=false;render();return}
@@ -890,6 +970,7 @@ function loadAllData(){
       player: cleanName(p.player||p.PLAYER||p.Player||p.PLAYER_NAME),
       prop_type: normalizePropName(p.prop_type||p.PROP_TYPE||p.Prop_Type),
       lean: normalizeLeanText(p.lean||p.LEAN||p.Lean),
+      confidence: normalizeConfidence(p.confidence||p.CONFIDENCE||p.Confidence),
       DATE: normalizeDate(p.DATE||p.date||p.Date),
       __pickPlayer: cleanName(p.player||p.PLAYER||p.Player||p.PLAYER_NAME),
       __normDate: normalizeDate(p.DATE||p.date||p.Date)
@@ -904,16 +985,20 @@ function loadAllData(){
     }
     const datePicks=(latestDate?cleanPicks.filter(p=>p.__normDate===latestDate):[]).filter(p=>tonightNames.has(normalizePlayerName(p.__pickPlayer))).sort((a,b)=>toNum(a.rank)-toNum(b.rank));
     const seen=new Set();st.aiPicks=datePicks.filter(p=>{const k=normalizePlayerName(p.__pickPlayer);if(!k||seen.has(k))return false;seen.add(k);return true}).map(({__pickPlayer,__normDate,...rest})=>rest);
+    st.dataVersion+=1;
+    st.latestPickDate=latestDate;
+    st.pickGuard=getPickGuard(latestDate,st.aiPicks.length);
     st.loading=false;st.loadedAt=new Date().toLocaleTimeString();
     // Use robust player finder (ported from MLB)
     if(st.tonight.length>0&&!st.player){
       st.player=firstValidPlayer(st.tonight);
-      const p=st.props.find(pr=>cleanName(pr.PLAYER_NAME)===cleanName(st.player)&&pr.METRIC===st.metric);
+      const p=st.props.find(pr=>normalizePlayerName(pr.PLAYER_NAME)===normalizePlayerName(st.player)&&normalizePropName(pr.METRIC)===normalizePropName(st.metric));
       st.line=p?.DK_LINE||"";
     }
     console.log(`🚀 NBA Dashboard loaded — player:"${st.player}"`);
     console.log(`   Tonight: ${st.tonight.length}, Stats: ${st.playerStats.length}, Props: ${st.props.length}`);
     console.log(`   Picks: ${st.aiPicks.length}, Splits: ${st.splits.length}`);
+    if(st.pickGuard)console.warn(`⚠️ ${st.pickGuard.text}`);
     if(st.tonight.length>0)console.log(`   Row 0 keys:`,Object.keys(st.tonight[0]).slice(0,8));
     if(!st.player)console.error(`❌ NO DEFAULT PLAYER FOUND. Row 0:`,JSON.stringify(st.tonight[0]).slice(0,200));
     st.streaks=getStreaks();render();
