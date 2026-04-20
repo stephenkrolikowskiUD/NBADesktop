@@ -386,7 +386,7 @@ function generateSlips(legs,n){
   if(legs.length<n)return[];const slips=[];const maxIter=n<=3?500:300;
   function gen(s,cur,used,tc){if(cur.length===n){const sc=cur.reduce((s,l)=>s+l.conviction,0);slips.push({legs:cur.slice(),score:sc,avgEdge:cur.reduce((s,l)=>s+l.edge,0)/n,avgHitRate:cur.reduce((s,l)=>s+l.hitRate,0)/n,teams:[...new Set(cur.map(l=>l.team))],signalCount:cur.reduce((s,l)=>s+l.signals.length,0)});return}
     for(let i=s;i<pool.length&&slips.length<maxIter;i++){const l=pool[i];if(used.has(l.name))continue;const t=tc.get(l.team)||0;if(t>=1)continue;used.add(l.name);tc.set(l.team,t+1);cur.push(l);gen(i+1,cur,used,tc);cur.pop();used.delete(l.name);tc.set(l.team,t)}}
-  const pool=legs.slice(0,n<=3?15:n<=4?18:20);
+  const seen=new Set();const dedupedLegs=legs.filter(l=>{const k=l.name.toLowerCase();if(seen.has(k))return false;seen.add(k);return true;});const pool=dedupedLegs.slice(0,n<=3?15:n<=4?18:20);
   gen(0,[],new Set(),new Map());slips.sort((a,b)=>b.score-a.score);
   const MAX_SLIPS=8;let selected=[];
   for(let cap=2;cap<=MAX_SLIPS;cap++){
