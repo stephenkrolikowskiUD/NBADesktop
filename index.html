@@ -242,7 +242,7 @@ function getRollingVal(row,prefix,m){
   return toNum(row[`${prefix}${m}`]);
 }
 
-let st={tonight:[],playerStats:[],props:[],splits:[],aiPicks:[],player:"",metric:"PTS",line:"",activeTab:"dashboard",oppFilter:"",picksView:"bets",propsMetric:"ALL",propsSearch:"",streakFilter:"all",dueFilter:"all",streaks:[],drafted:new Set(),slipLegs:"3",parlayStat:"PTS",loading:true,error:null,loadedAt:null,latestPickDate:"",pickGuard:null,dataVersion:0};
+let st={tonight:[],playerStats:[],props:[],splits:[],aiPicks:[],correlations:[],player:"",metric:"PTS",line:"",activeTab:"dashboard",oppFilter:"",picksView:"bets",propsMetric:"ALL",propsSearch:"",streakFilter:"all",dueFilter:"all",streaks:[],drafted:new Set(),slipLegs:"3",parlayStat:"PTS",loading:true,error:null,loadedAt:null,latestPickDate:"",pickGuard:null,dataVersion:0};
 let cache={player:null,sortedLogs:null};
 let derived={
   version:-1,
@@ -250,10 +250,11 @@ let derived={
   propsByName:new Map(),
   tonightByName:new Map(),
   aiPicksByName:new Map(),
+  corrByPair:new Map(),
   memo:new Map()
 };
 function resetDerived(){
-  derived={version:-1,logsByName:new Map(),propsByName:new Map(),tonightByName:new Map(),aiPicksByName:new Map(),memo:new Map()};
+  derived={version:-1,logsByName:new Map(),propsByName:new Map(),tonightByName:new Map(),aiPicksByName:new Map(),corrByPair:new Map(),memo:new Map()};
 }
 function indexRowsByName(rows,nameKey){
   const map=new Map();
@@ -279,6 +280,13 @@ function ensureDerived(){
   for(const row of st.aiPicks||[]){
     const key=normalizePlayerName(row?.player||row?.PLAYER||row?.Player||row?.PLAYER_NAME);
     if(key&&!derived.aiPicksByName.has(key))derived.aiPicksByName.set(key,row);
+  }
+  for(const row of st.correlations||[]){
+    const a=normalizePlayerName(row?.PLAYER_A||row?.Player_A||row?.player_a||row?.PLAYER1||row?.Player1||row?.player1||row?.PLAYER_NAME_A);
+    const b=normalizePlayerName(row?.PLAYER_B||row?.Player_B||row?.player_b||row?.PLAYER2||row?.Player2||row?.player2||row?.PLAYER_NAME_B);
+    if(!a||!b||a===b)continue;
+    const corr=toNum(row?.CORRELATION??row?.Correlation??row?.corr??row?.CORR);
+    derived.corrByPair.set([a,b].sort().join("|"),corr);
   }
 }
 function getMemo(key,build){
@@ -727,6 +735,87 @@ function getDraftBoard(){
   }board.sort((a,b)=>parseFloat(b.projUD)-parseFloat(a.projUD));return board;});
 }
 
+function getCorrValue(a,b){
+  ensureDerived();
+  return derived.corrByPair.get([normalizePlayerName(a),normalizePlayerName(b)].sort().join("|"))||0;
+}
+
+function getDraftStacks(){
+  return getMemo("draftStacks",()=>{
+    const board=getDraftBoard();
+    const byName=new Map(board.map(p=>[normalizePlayerName(p.name),p]));
+    const byTeamGame=new Map();
+    const gameRows=(st.tonight||[]).filter(r=>r.PLAYER_NAME);
+    for(const row of gameRows){
+      const team=row.TEAM_ABBREVIATION||"";
+      const opp=row.TONIGHT_OPP||"";
+      const gameKey=[team,opp].sort().join("|");
+      if(!byTeamGame.has(team))byTeamGame.set(team,[]);
+      byTeamGame.get(team).push({...row,__gameKey:gameKey,__ou:toNum(row.GAME_TOTAL)});
+    }
+    const pairs=[];
+    const seen=new Set();
+    function addPair(a,b,meta){
+      const key=[normalizePlayerName(a.name),normalizePlayerName(b.name)].sort().join("|");
+      if(seen.has(key))return;
+      seen.add(key);
+      const proj=toNum(a.projUD)+toNum(b.projUD);
+      const corr=getCorrValue(a.name,b.name);
+      const total=Math.max(toNum(meta.gameTotal),toNum(a.gameTotal),toNum(b.gameTotal));
+      const score=proj+Math.max(0,total-220)/4+(corr>0.3?corr*10:0)+(meta.gameStack?4:0)+(meta.sameTeam?2:0);
+      const tags=[];
+      if(total>=230)tags.push("⚡ HIGH TOTAL");
+      if(corr>0.3)tags.push("🔗 CORRELATED");
+      if(meta.gameStack||meta.sameTeam)tags.push("🎯 STACK TARGET");
+      pairs.push({players:[a,b],score,combinedProj:proj.toFixed(1),gameTotal:total||"",corr,tags,sameTeam:!!meta.sameTeam,gameStack:!!meta.gameStack});
+    }
+    for(const teamRows of byTeamGame.values()){
+      const strong=teamRows.filter(r=>byName.has(normalizePlayerName(r.PLAYER_NAME)));
+      for(let i=0;i<strong.length;i++){
+        for(let j=i+1;j<strong.length;j++){
+          const a=byName.get(normalizePlayerName(strong[i].PLAYER_NAME));
+          const b=byName.get(normalizePlayerName(strong[j].PLAYER_NAME));
+          addPair(a,b,{sameTeam:true,gameTotal:Math.max(toNum(strong[i].GAME_TOTAL),toNum(strong[j].GAME_TOTAL))});
+        }
+      }
+    }
+    const rowsByGame=new Map();
+    for(const row of gameRows){
+      const key=row.__gameKey;
+      if(!rowsByGame.has(key))rowsByGame.set(key,[]);
+      rowsByGame.get(key).push(row);
+    }
+    for(const rows of rowsByGame.values()){
+      const total=Math.max(...rows.map(r=>toNum(r.GAME_TOTAL)),0);
+      if(total<230)continue;
+      for(let i=0;i<rows.length;i++){
+        for(let j=i+1;j<rows.length;j++){
+          const ra=rows[i],rb=rows[j];
+          if((ra.TEAM_ABBREVIATION||"")===(rb.TEAM_ABBREVIATION||""))continue;
+          const a=byName.get(normalizePlayerName(ra.PLAYER_NAME));
+          const b=byName.get(normalizePlayerName(rb.PLAYER_NAME));
+          if(a&&b)addPair(a,b,{gameStack:true,gameTotal:total});
+        }
+      }
+    }
+    return pairs.sort((a,b)=>b.score-a.score).slice(0,10);
+  });
+}
+
+function getDraftStackTagMap(){
+  return getMemo("draftStackTags",()=>{
+    const map=new Map();
+    getDraftStacks().forEach(stack=>{
+      stack.players.forEach(p=>{
+        const key=normalizePlayerName(p.name);
+        if(!map.has(key))map.set(key,new Set());
+        stack.tags.forEach(tag=>map.get(key).add(tag));
+      });
+    });
+    return map;
+  });
+}
+
 function render(){
   const focus=saveFocus();
   const app=document.getElementById("app");
@@ -850,13 +939,19 @@ function render(){
           return`<div class="ai-pick-card ai-conf-${cls}" data-ai-idx="${i}"><div class="ai-pick-top"><div class="ai-pick-player"><span class="ai-rank" style="background:${rb};color:#000">${pk.rank||i+1}</span>${esc(pk.player)}</div><span class="conf-tag conf-tag-${cls}">${esc(c)}</span></div><div class="ai-pick-meta"><span>${esc(pk.lean)} ${pk.line} ${esc(pk.prop_type)}</span><span>${esc(pk.game)}</span></div><div class="ai-pick-rationale">${esc(pk.rationale)}</div>${pk.injury_context?`<div style="font-size:10px;color:#f97316;margin-top:3px">⚠️ ${esc(pk.injury_context)}</div>`:""}</div>`}).join("")+`</div>`}
 
     }else if(picksView==="draft"){
-      const board=getDraftBoard();const avail=board.filter(p=>!st.drafted.has(p.name));
+      const board=getDraftBoard();const avail=board.filter(p=>!st.drafted.has(p.name));const stacks=getDraftStacks().slice(0,5);const stackTags=getDraftStackTagMap();
       function getTier(v){v=parseFloat(v);if(v>=45)return{label:"TIER 1 — Elite",cls:"tier1",color:"#eab308"};if(v>=38)return{label:"TIER 2 — Strong",cls:"tier2",color:"#3b82f6"};if(v>=30)return{label:"TIER 3 — Solid",cls:"tier3",color:"#8b5cf6"};if(v>=22)return{label:"TIER 4 — Role",cls:"",color:"#9ca3af"};return{label:"TIER 5 — Dart",cls:"",color:"#666"}}
       picksHTML=picksIntro+`<div style="padding:12px 16px 4px;color:#eab308;font-size:13px;font-weight:700">🏀 Draft Cheat Sheet</div><div style="padding:0 16px 4px;color:#9ca3af;font-size:10px">UD: PTS×1 REB×1.2 AST×1.5 STL×3 BLK×3 TOV×-1. Tap to draft.</div><div class="draft-controls"><button class="draft-reset" onclick="resetDrafted()">Reset</button><div class="draft-count">${st.drafted.size} drafted · ${avail.length} left</div></div><div class="cards-grid">`;
       let lt="";board.forEach((p,i)=>{const tier=getTier(p.projUD);const d=st.drafted.has(p.name);const tc=tier.label!==lt;lt=tier.label;
         let tags=[];if(p.isSmash)tags.push(`<span class="draft-tag" style="background:#22c55e22;color:#22c55e">SMASH</span>`);if(p.stocksBoost>=.20)tags.push(`<span class="draft-tag" style="background:#ef444422;color:#ef4444">🛡 STOCKS</span>`);if(p.astBoost>=.25)tags.push(`<span class="draft-tag" style="background:#3b82f622;color:#3b82f6">🎯 AST</span>`);if(p.gameTotal>=230)tags.push(`<span class="draft-tag" style="background:#eab30822;color:#eab308">⚡ HIGH O/U</span>`);if(parseFloat(p.l5UD)>parseFloat(p.projUD)*1.1)tags.push(`<span class="draft-tag" style="background:#22c55e22;color:#22c55e">📈 HOT</span>`);
+        (stackTags.get(normalizePlayerName(p.name))||new Set()).forEach(tag=>{const clr=tag.includes("CORRELATED")?"#60a5fa":tag.includes("HIGH TOTAL")?"#fbbf24":"#34d399";tags.push(`<span class="draft-tag" style="background:${clr}22;color:${clr}">${tag}</span>`);});
         picksHTML+=`${tc?`<div class="draft-tier-label" style="color:${tier.color}">${tier.label}</div>`:""}<div class="draft-card${d?" drafted":""}${p.isSmash&&!d?" smash":!d?" "+tier.cls:""}" onclick="toggleDrafted('${esc(p.name)}')"><div class="draft-rank" style="color:${d?"#666":tier.color}">${i+1}</div><div class="draft-main"><div class="draft-name">${esc(p.name)}</div><div class="draft-meta">${esc(p.team)} vs ${esc(p.opp)} · ${p.seasPTS.toFixed(0)}p/${p.seasREB.toFixed(0)}r/${p.seasAST.toFixed(0)}a · STK:${p.stocks}${p.gameTotal?` · O/U:${p.gameTotal}`:""}</div>${tags.length?`<div class="draft-tags">${tags.join("")}</div>`:""}</div><div class="draft-fp"><div class="draft-fp-val" style="color:${d?"#666":tier.color}">${p.projUD}</div><div class="draft-fp-lbl">UD FP</div>${parseFloat(p.l5UD)!==parseFloat(p.projUD)?`<div style="font-size:9px;color:${parseFloat(p.l5UD)>parseFloat(p.projUD)?"#22c55e":"#ef4444"};margin-top:1px">L5: ${p.l5UD}</div>`:""}</div></div>`});
       picksHTML+=`</div>`;
+      if(stacks.length){
+        picksHTML+=`<div style="padding:14px 16px 4px;color:#eab308;font-size:12px;font-weight:700">⚡ Stacks</div><div style="padding:0 16px 6px;color:#9ca3af;font-size:10px">Top 2-player snake-draft stacks ranked by combined UD projection, game total, and teammate correlation.</div><div class="cards-grid">`;
+        picksHTML+=stacks.map((s,i)=>`<div class="bet-card ${i===0?"elite":"mid"}" style="cursor:default"><div class="bet-left"><div class="bet-name">${esc(s.players[0].name)} + ${esc(s.players[1].name)}</div><div class="bet-meta">${esc(s.players[0].team)} / ${esc(s.players[1].team)}${s.gameTotal?` · O/U ${s.gameTotal}`:""}${s.corr>0.3?` · Corr ${s.corr.toFixed(2)}`:""}</div><div class="draft-tags" style="margin-top:6px">${s.tags.map(tag=>`<span class="draft-tag" style="background:${tag.includes("CORRELATED")?"#60a5fa22":tag.includes("HIGH TOTAL")?"#fbbf2422":"#34d39922"};color:${tag.includes("CORRELATED")?"#60a5fa":tag.includes("HIGH TOTAL")?"#fbbf24":"#34d399"}">${tag}</span>`).join("")}</div></div><div class="bet-right"><div class="bet-edge pos">${s.combinedProj}</div><div class="bet-sub">UD FP</div></div></div>`).join("");
+        picksHTML+=`</div>`;
+      }
 
     }else if(picksView==="streaks"){
       const all=st.streaks;const filters=[{k:"all",l:"All"},{k:"fire",l:"🔥 5+"},{k:"pts",l:"PTS"},{k:"pra",l:"PRA"},{k:"reb",l:"REB"},{k:"ast",l:"AST"},{k:"3pm",l:"3PM"}];
@@ -970,14 +1065,15 @@ function render(){
 
 function loadAllData(){
   st.loading=true;st.error=null;cache.player=null;cache.sortedLogs=null;resetDerived();render();
-  Promise.all([fetchSheet("Tonights_Opponent").catch(()=>null),fetchSheet("Player_Stats").catch(()=>null),fetchSheet("DK_Player_Props").catch(()=>[]),fetchSheet("Home_Away_Splits").catch(()=>[]),fetchSheet("Daily_Picks").catch(()=>[])])
-  .then(([tonight,stats,props,splits,picks])=>{
+  Promise.all([fetchSheet("Tonights_Opponent").catch(()=>null),fetchSheet("Player_Stats").catch(()=>null),fetchSheet("DK_Player_Props").catch(()=>[]),fetchSheet("Home_Away_Splits").catch(()=>[]),fetchSheet("Daily_Picks").catch(()=>[]),fetchSheet("Teammate_Correlations").catch(()=>[])])
+  .then(([tonight,stats,props,splits,picks,correlations])=>{
     if(!tonight||!stats){st.error="Could not load critical sheets.";st.loading=false;render();return}
     // Apply data cleaning (ported from MLB)
     st.tonight=normalizeKeys(cleanRows(tonight));
     st.playerStats=normalizeKeys(cleanRows(stats));
     st.props=normalizeKeys(cleanRows(props||[]));
     st.splits=normalizeKeys(cleanRows(splits||[]));
+    st.correlations=normalizeKeys(cleanRows(correlations||[]));
     const cleanPicks=normalizeKeys(cleanRows(picks||[])).map(p=>({
       ...p,
       player: cleanName(p.player||p.PLAYER||p.Player||p.PLAYER_NAME),
@@ -1010,7 +1106,7 @@ function loadAllData(){
     }
     console.log(`🚀 NBA Dashboard loaded — player:"${st.player}"`);
     console.log(`   Tonight: ${st.tonight.length}, Stats: ${st.playerStats.length}, Props: ${st.props.length}`);
-    console.log(`   Picks: ${st.aiPicks.length}, Splits: ${st.splits.length}`);
+    console.log(`   Picks: ${st.aiPicks.length}, Splits: ${st.splits.length}, Corr: ${st.correlations.length}`);
     if(st.pickGuard)console.warn(`⚠️ ${st.pickGuard.text}`);
     if(st.tonight.length>0)console.log(`   Row 0 keys:`,Object.keys(st.tonight[0]).slice(0,8));
     if(!st.player)console.error(`❌ NO DEFAULT PLAYER FOUND. Row 0:`,JSON.stringify(st.tonight[0]).slice(0,200));
