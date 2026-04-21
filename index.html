@@ -443,10 +443,22 @@ function getPlayerLogs(name){
 function getHitRate(name,metric,line){
   const logs=getPlayerLogs(name);if(logs.length<3)return null;
   const ln=parseFloat(line);if(isNaN(ln))return null;
-  const hits=COMBO_STATS[metric]
-    ?logs.filter(g=>COMBO_STATS[metric].reduce((s,k)=>s+toNum(g[k]),0)>ln).length
-    :logs.filter(g=>toNum(g[metric])>ln).length;
-  return{rate:hits/logs.length,hits,total:logs.length};
+  let over=0,under=0,push=0;
+  for(const g of logs){
+    const val=COMBO_STATS[metric]
+      ?COMBO_STATS[metric].reduce((s,k)=>s+toNum(g[k]),0)
+      :toNum(g[metric]);
+    if(val>ln)over++;
+    else if(val<ln)under++;
+    else push++;
+  }
+  const nonPush=over+under;
+  return{
+    overRate:nonPush?over/nonPush:0,
+    underRate:nonPush?under/nonPush:0,
+    pushRate:logs.length?push/logs.length:0,
+    over,under,push,nonPush,total:logs.length
+  };
 }
 function getBestBets(){
   return getMemo("bestBets",()=>{if(!st.props.length||!st.playerStats.length)return[];const bets=[];const tSet=new Set(st.tonight.map(p=>normalizePlayerName(p.PLAYER_NAME)).filter(Boolean));
@@ -454,13 +466,13 @@ function getBestBets(){
     const MIN_LINES={STL:1.5,BLK:1.5,AST:2.5,TOV:1.5};if(MIN_LINES[metric]&&line<MIN_LINES[metric])continue;
     if(metric==="STL"||metric==="BLK")continue;
     const overO=parseInt(p.OVER_ODDS),underO=parseInt(p.UNDER_ODDS);if(isNaN(overO)&&isNaN(underO))continue;
-    const hr=getHitRate(name,metric,line);if(!hr||hr.total<3)continue;
-    const oIP=impliedProb(overO),uIP=impliedProb(underO);let oE=null,uE=null;if(oIP!==null)oE=hr.rate-oIP;if(uIP!==null)uE=(1-hr.rate)-uIP;
+    const hr=getHitRate(name,metric,line);if(!hr||hr.total<3||!hr.nonPush)continue;
+    const oIP=impliedProb(overO),uIP=impliedProb(underO);let oE=null,uE=null;if(oIP!==null)oE=hr.overRate-oIP;if(uIP!==null)uE=hr.underRate-uIP;
     let lean,edge,odds,ip,hitRate;
-    if(oE!==null&&uE!==null){if(oE>=uE){lean="OVER";edge=oE;odds=overO;ip=oIP;hitRate=hr.rate}else{lean="UNDER";edge=uE;odds=underO;ip=uIP;hitRate=1-hr.rate}}
-    else if(oE!==null){lean="OVER";edge=oE;odds=overO;ip=oIP;hitRate=hr.rate}else{lean="UNDER";edge=uE;odds=underO;ip=uIP;hitRate=1-hr.rate}
+    if(oE!==null&&uE!==null){if(oE>=uE){lean="OVER";edge=oE;odds=overO;ip=oIP;hitRate=hr.overRate}else{lean="UNDER";edge=uE;odds=underO;ip=uIP;hitRate=hr.underRate}}
+    else if(oE!==null){lean="OVER";edge=oE;odds=overO;ip=oIP;hitRate=hr.overRate}else{lean="UNDER";edge=uE;odds=underO;ip=uIP;hitRate=hr.underRate}
     if(edge===null)continue;const pT=derived.tonightByName.get(nameKey)||{};
-    bets.push({name,metric,line,lean,edge,odds,impliedProb:ip,hitRate,hits:lean==="OVER"?hr.hits:hr.total-hr.hits,total:hr.total,team:pT.TEAM_ABBREVIATION||"",opp:pT.TONIGHT_OPP||"",dkLine:p.DK_LINE,overOdds:p.OVER_ODDS,underOdds:p.UNDER_ODDS});
+    bets.push({name,metric,line,lean,edge,odds,impliedProb:ip,hitRate,hits:lean==="OVER"?hr.over:hr.under,total:hr.nonPush,team:pT.TEAM_ABBREVIATION||"",opp:pT.TONIGHT_OPP||"",dkLine:p.DK_LINE,overOdds:p.OVER_ODDS,underOdds:p.UNDER_ODDS});
   }bets.sort((a,b)=>b.edge-a.edge);return bets;});
 }
 
