@@ -113,6 +113,27 @@ def normalize_pick_date(val):
     except Exception:
         return s
 
+def fetch_league_gamelog_df(season, season_type, max_attempts=3):
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = leaguegamelog.LeagueGameLog(
+                player_or_team_abbreviation='P',
+                league_id='00',
+                season=season,
+                season_type_all_star=season_type,
+                timeout=90,
+            )
+            df = resp.get_data_frames()[0]
+            print(f"   ✅ {season_type}: {len(df)} rows")
+            return df
+        except Exception as e:
+            last_err = e
+            print(f"   ⚠️ {season_type} fetch attempt {attempt}/{max_attempts} failed: {e}")
+            if attempt < max_attempts:
+                time.sleep(3 * attempt)
+    raise last_err
+
 def pick_player_name(row):
     for col in ('player', 'PLAYER', 'Player', 'PLAYER_NAME'):
         if col in row and pd.notna(row[col]) and clean_name(row[col]):
@@ -348,14 +369,20 @@ PLAYER_LOG_BASE_COLS = [
 ]
 PLAYER_LOG_NUMERIC_COLS = ['PLAYER_ID', 'MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'FG3M', 'FG3A', 'FGA', 'FTA', 'FGM']
 existing_player_logs = load_existing_player_logs('Player_Stats', PLAYER_LOG_BASE_COLS, PLAYER_LOG_NUMERIC_COLS)
-log_reg = leaguegamelog.LeagueGameLog(player_or_team_abbreviation='P', league_id='00', season=NBA_SEASON, season_type_all_star='Regular Season')
-log_playin = leaguegamelog.LeagueGameLog(player_or_team_abbreviation='P', league_id='00', season=NBA_SEASON, season_type_all_star='PlayIn')
-log_playoffs = leaguegamelog.LeagueGameLog(player_or_team_abbreviation='P', league_id='00', season=NBA_SEASON, season_type_all_star='Playoffs')
-df_logs_api = pd.concat([
-    log_reg.get_data_frames()[0],
-    log_playin.get_data_frames()[0],
-    log_playoffs.get_data_frames()[0]
-], ignore_index=True)
+df_log_parts = []
+for season_type in ['Regular Season', 'PlayIn', 'Playoffs']:
+    try:
+        df_log_parts.append(fetch_league_gamelog_df(NBA_SEASON, season_type))
+    except Exception as e:
+        print(f"   ❌ {season_type} fetch failed after retries: {e}")
+if not df_log_parts:
+    if len(existing_player_logs) > 0:
+        print("   ⚠️ NBA API unavailable — using seeded Player_Stats only")
+        df_logs_api = existing_player_logs[PLAYER_LOG_BASE_COLS].copy()
+    else:
+        raise RuntimeError("NBA API unavailable and no seeded Player_Stats exist to fall back on.")
+else:
+    df_logs_api = pd.concat(df_log_parts, ignore_index=True)
 if 'GAME_OPP' not in df_logs_api.columns:
     df_logs_api['GAME_OPP'] = df_logs_api['MATCHUP'].astype(str).str[-3:]
 
