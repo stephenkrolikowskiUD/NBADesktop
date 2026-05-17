@@ -1,5 +1,4 @@
 # @title 🏀 NBA Daily Picks Grader — Run Morning After Games — 5-4 Baseline
-!pip install nba_api
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -37,9 +36,10 @@ def get_gspread_client():
 gc = get_gspread_client()
 
 SHEET_NAME = 'NBA_Dashboard_Data'
+SHEET_ID = '12gBgVx_RCsIytjZHjfZWgLtG-R-zcPbYYE-CVFd4EDw'
 SNAPSHOT_DATE = "2026-05-04"
-sh = gc.open(SHEET_NAME)
-print(f"✅ Connected to Google Sheet: {SHEET_NAME}")
+sh = gc.open_by_key(SHEET_ID)
+print(f"✅ Connected to Google Sheet: {SHEET_ID}")
 
 # --- 2. LOAD DAILY_PICKS ---
 print("\nLoading Daily_Picks...")

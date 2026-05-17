@@ -32,12 +32,4 @@ jobs:
           python -m pip install pandas numpy requests pytz gspread google-auth google-genai nba_api
 
       - name: Run NBA engine
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          src = Path("NBAEnginev5-4.py")
-          text = src.read_text()
-          lines = [line for line in text.splitlines() if not line.lstrip().startswith('!pip ')]
-          Path("/tmp/NBAEnginev5-4.run.py").write_text("\n".join(lines) + "\n")
-          PY
-          python /tmp/NBAEnginev5-4.run.py
+        run: python NBAEnginev5-4.py

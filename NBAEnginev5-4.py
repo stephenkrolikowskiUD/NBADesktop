@@ -1,5 +1,4 @@
 # @title 🏀 NBA Dashboard Engine (v8.5 - EV%, Line Movement, Gemini AI Picks) — 5-4 Baseline
-!pip install nba_api requests google-genai
 import pandas as pd
 import numpy as np
 import requests
@@ -18,6 +17,7 @@ from nba_api.stats.static import teams
 # --- 1. AUTHENTICATION & SETUP ---
 print("Authenticating with Google...")
 SHEET_NAME = 'NBA_Dashboard_Data'
+SHEET_ID = '12gBgVx_RCsIytjZHjfZWgLtG-R-zcPbYYE-CVFd4EDw'
 SNAPSHOT_DATE = "2026-05-04"
 
 def get_gspread_client():
@@ -59,10 +59,10 @@ def load_secret(name, prompt_text=None, allow_missing=False):
 
 gc = get_gspread_client()
 try:
-    sh = gc.open(SHEET_NAME)
-    print(f"✅ Connected to Google Sheet: {SHEET_NAME}")
+    sh = gc.open_by_key(SHEET_ID)
+    print(f"✅ Connected to Google Sheet: {SHEET_ID}")
 except Exception as e:
-    print(f"❌ Error: Could not find Google Sheet named '{SHEET_NAME}'.")
+    print(f"❌ Error: Could not find Google Sheet with ID '{SHEET_ID}'.")
 
 ODDS_API_KEY = load_secret('ODDS_API_KEY', '🔑 Paste your Odds API Key: ')
 GEMINI_API_KEY = load_secret('GEMINI_API_KEY', allow_missing=True)

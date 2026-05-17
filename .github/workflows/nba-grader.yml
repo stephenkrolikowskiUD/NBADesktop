@@ -26,12 +26,4 @@ jobs:
           python -m pip install pandas numpy pytz gspread google-auth nba_api
 
       - name: Run NBA grader
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          src = Path("NBAGrader5-4.py")
-          text = src.read_text()
-          lines = [line for line in text.splitlines() if not line.lstrip().startswith('!pip ')]
-          Path("/tmp/NBAGrader5-4.run.py").write_text("\n".join(lines) + "\n")
-          PY
-          python /tmp/NBAGrader5-4.run.py
+        run: python NBAGrader5-4.py
