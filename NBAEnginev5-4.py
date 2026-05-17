@@ -134,6 +134,26 @@ def fetch_league_gamelog_df(season, season_type, max_attempts=3):
                 time.sleep(3 * attempt)
     raise last_err
 
+def fetch_scoreboard_games(game_date, max_attempts=3):
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            board = scoreboardv3.ScoreboardV3(
+                game_date=game_date,
+                league_id='00',
+                timeout=90,
+            )
+            games = board.get_dict().get('scoreboard', {}).get('games', [])
+            print(f"   ✅ Schedule fetch: {len(games)} games")
+            return games
+        except Exception as e:
+            last_err = e
+            print(f"   ⚠️ Schedule fetch attempt {attempt}/{max_attempts} failed: {e}")
+            if attempt < max_attempts:
+                time.sleep(3 * attempt)
+    print(f"   ❌ Schedule fetch failed after retries: {last_err}")
+    return []
+
 def pick_player_name(row):
     for col in ('player', 'PLAYER', 'Player', 'PLAYER_NAME'):
         if col in row and pd.notna(row[col]) and clean_name(row[col]):
@@ -497,19 +517,13 @@ df_player_final['GAME_DATE'] = df_player_final['GAME_DATE'].dt.strftime('%Y-%m-%
 # --- 4.5 ACTIVE TONIGHT FILTER ---
 print("Fetching tonight's schedule...")
 today_str = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d')
-board = scoreboardv3.ScoreboardV3(game_date=today_str, league_id='00')
 opp_map = {}
-games_list = []
-try:
-    games_dict = board.get_dict()
-    games_list = games_dict['scoreboard']['games']
-    for game in games_list:
-        home = game['homeTeam']['teamTricode']
-        away = game['awayTeam']['teamTricode']
-        opp_map[home] = away
-        opp_map[away] = home
-except Exception as e:
-    print(f"❌ Schedule failed: {e}")
+games_list = fetch_scoreboard_games(today_str)
+for game in games_list:
+    home = game['homeTeam']['teamTricode']
+    away = game['awayTeam']['teamTricode']
+    opp_map[home] = away
+    opp_map[away] = home
 
 current_teams = df_player_final.sort_values('GAME_DATE').groupby('PLAYER_NAME').tail(1)[['PLAYER_NAME', 'TEAM_ABBREVIATION']]
 current_teams.rename(columns={'TEAM_ABBREVIATION': 'CURRENT_TEAM'}, inplace=True)
@@ -524,6 +538,25 @@ print(f"🔥 Filtered dashboard for {len(games_list)} games on {today_str}!")
 
 timestamp_pst = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d %I:%M:%S %p EST')
 df_player_final['LAST_UPDATED'] = timestamp_pst
+
+if len(games_list) == 0 and os.environ.get('GITHUB_ACTIONS', '').lower() == 'true':
+    print("⚠️ No NBA games tonight or schedule unavailable — skipping slate-specific work in GitHub Actions.")
+    print("\n" + "=" * 60)
+    print("🏀 NBA ENGINE v8.5 — RUN COMPLETE")
+    print("=" * 60)
+    print(f"📅 Date:             {today_str}")
+    print(f"📆 Season:           {NBA_SEASON}")
+    print(f"🗂️  Snapshot:         {SNAPSHOT_DATE}")
+    print("🏟️  Games tonight:    0")
+    print(f"🏀 Active players:    {len(df_player_final['PLAYER_NAME'].unique())}")
+    print("🎲 Player props:      Skipped")
+    print("📈 +EV props:         Skipped")
+    print("🔄 Line movers:       Skipped")
+    print("🤖 AI Picks:          Skipped")
+    print(f"📝 Google Sheet:      {SHEET_ID}")
+    print(f"🕐 Last updated:      {timestamp_pst}")
+    print("=" * 60)
+    raise SystemExit(0)
 
 # --- 5. FETCH TEAM ADVANCED STATS ---
 print("Fetching Team Advanced Stats...")
