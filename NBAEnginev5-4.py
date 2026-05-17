@@ -145,14 +145,50 @@ def fetch_scoreboard_games(game_date, max_attempts=3):
             )
             games = board.get_dict().get('scoreboard', {}).get('games', [])
             print(f"   ✅ Schedule fetch: {len(games)} games")
-            return games
+            return games, 'stats'
         except Exception as e:
             last_err = e
             print(f"   ⚠️ Schedule fetch attempt {attempt}/{max_attempts} failed: {e}")
             if attempt < max_attempts:
                 time.sleep(3 * attempt)
     print(f"   ❌ Schedule fetch failed after retries: {last_err}")
-    return []
+
+    # Fallback: use the NBA's public scoreboard JSON instead of stats.nba.com.
+    date_compact = game_date.replace('-', '')
+    fallback_urls = [
+        f"https://data.nba.net/prod/v2/{date_compact}/scoreboard.json",
+        "https://cdn.nba.com/static/json/liveData/scoreboard/todaysScoreboard_00.json",
+    ]
+    for url in fallback_urls:
+        try:
+            resp = requests.get(url, timeout=30)
+            if resp.status_code != 200:
+                print(f"   ⚠️ Fallback schedule API {resp.status_code}: {url}")
+                continue
+            payload = resp.json()
+            raw_games = payload.get('games') or payload.get('scoreboard', {}).get('games') or []
+            normalized_games = []
+            for game in raw_games:
+                home = (
+                    game.get('hTeam', {}).get('triCode')
+                    or game.get('homeTeam', {}).get('teamTricode')
+                    or game.get('homeTeam', {}).get('teamTricode')
+                )
+                away = (
+                    game.get('vTeam', {}).get('triCode')
+                    or game.get('awayTeam', {}).get('teamTricode')
+                    or game.get('awayTeam', {}).get('teamTricode')
+                )
+                if home and away:
+                    normalized_games.append({
+                        'homeTeam': {'teamTricode': home},
+                        'awayTeam': {'teamTricode': away},
+                    })
+            print(f"   ✅ Fallback schedule fetch: {len(normalized_games)} games from {url}")
+            return normalized_games, 'fallback'
+        except Exception as e:
+            print(f"   ⚠️ Fallback schedule fetch failed from {url}: {e}")
+    return [], 'unavailable'
 
 def pick_player_name(row):
     for col in ('player', 'PLAYER', 'Player', 'PLAYER_NAME'):
@@ -518,7 +554,7 @@ df_player_final['GAME_DATE'] = df_player_final['GAME_DATE'].dt.strftime('%Y-%m-%
 print("Fetching tonight's schedule...")
 today_str = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d')
 opp_map = {}
-games_list = fetch_scoreboard_games(today_str)
+games_list, schedule_source = fetch_scoreboard_games(today_str)
 for game in games_list:
     home = game['homeTeam']['teamTricode']
     away = game['awayTeam']['teamTricode']
@@ -540,7 +576,10 @@ timestamp_pst = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d %I:
 df_player_final['LAST_UPDATED'] = timestamp_pst
 
 if len(games_list) == 0 and os.environ.get('GITHUB_ACTIONS', '').lower() == 'true':
-    print("⚠️ No NBA games tonight or schedule unavailable — skipping slate-specific work in GitHub Actions.")
+    if schedule_source == 'unavailable':
+        print("⚠️ NBA schedule unavailable in GitHub Actions — skipping slate-specific work.")
+    else:
+        print("⚠️ No NBA games tonight — skipping slate-specific work in GitHub Actions.")
     print("\n" + "=" * 60)
     print("🏀 NBA ENGINE v8.5 — RUN COMPLETE")
     print("=" * 60)
