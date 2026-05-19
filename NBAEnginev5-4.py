@@ -203,8 +203,15 @@ def fetch_scoreboard_games(game_date, max_attempts=3):
             full_to_abbr = {t['full_name']: t['abbreviation'] for t in teams.get_teams()}
             normalized_games = []
             for game in raw_games:
-                commence_date = str(game.get('commence_time', ''))[:10]
-                if commence_date != game_date:
+                commence_raw = str(game.get('commence_time', '') or '').strip()
+                if not commence_raw:
+                    continue
+                try:
+                    commence_ts = datetime.fromisoformat(commence_raw.replace('Z', '+00:00'))
+                    commence_date_est = commence_ts.astimezone(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d')
+                except Exception:
+                    commence_date_est = commence_raw[:10]
+                if commence_date_est != game_date:
                     continue
                 home = full_to_abbr.get(game.get('home_team'))
                 away = full_to_abbr.get(game.get('away_team'))
