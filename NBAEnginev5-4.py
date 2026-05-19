@@ -454,20 +454,25 @@ PLAYER_LOG_BASE_COLS = [
 ]
 PLAYER_LOG_NUMERIC_COLS = ['PLAYER_ID', 'MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'FG3M', 'FG3A', 'FGA', 'FTA', 'FGM']
 existing_player_logs = load_existing_player_logs('Player_Stats', PLAYER_LOG_BASE_COLS, PLAYER_LOG_NUMERIC_COLS)
+is_github_actions = os.environ.get('GITHUB_ACTIONS', '').lower() == 'true'
 df_log_parts = []
-for season_type in ['Regular Season', 'PlayIn', 'Playoffs']:
-    try:
-        df_log_parts.append(fetch_league_gamelog_df(NBA_SEASON, season_type))
-    except Exception as e:
-        print(f"   ❌ {season_type} fetch failed after retries: {e}")
-if not df_log_parts:
-    if len(existing_player_logs) > 0:
-        print("   ⚠️ NBA API unavailable — using seeded Player_Stats only")
-        df_logs_api = existing_player_logs[PLAYER_LOG_BASE_COLS].copy()
-    else:
-        raise RuntimeError("NBA API unavailable and no seeded Player_Stats exist to fall back on.")
+if is_github_actions and len(existing_player_logs) > 0:
+    print("   ⚠️ GitHub Actions mode — using seeded Player_Stats and skipping full NBA historical refresh")
+    df_logs_api = existing_player_logs[PLAYER_LOG_BASE_COLS].copy()
 else:
-    df_logs_api = pd.concat(df_log_parts, ignore_index=True)
+    for season_type in ['Regular Season', 'PlayIn', 'Playoffs']:
+        try:
+            df_log_parts.append(fetch_league_gamelog_df(NBA_SEASON, season_type))
+        except Exception as e:
+            print(f"   ❌ {season_type} fetch failed after retries: {e}")
+    if not df_log_parts:
+        if len(existing_player_logs) > 0:
+            print("   ⚠️ NBA API unavailable — using seeded Player_Stats only")
+            df_logs_api = existing_player_logs[PLAYER_LOG_BASE_COLS].copy()
+        else:
+            raise RuntimeError("NBA API unavailable and no seeded Player_Stats exist to fall back on.")
+    else:
+        df_logs_api = pd.concat(df_log_parts, ignore_index=True)
 if 'GAME_OPP' not in df_logs_api.columns:
     df_logs_api['GAME_OPP'] = df_logs_api['MATCHUP'].astype(str).str[-3:]
 
