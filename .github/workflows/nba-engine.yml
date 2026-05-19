@@ -17,6 +17,7 @@ jobs:
       ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+      PYTHONUNBUFFERED: "1"
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
@@ -32,4 +33,4 @@ jobs:
           python -m pip install pandas numpy requests pytz gspread google-auth google-genai nba_api
 
       - name: Run NBA engine
-        run: python NBAEnginev5-4.py
+        run: python -u NBAEnginev5-4.py
