@@ -640,15 +640,35 @@ if len(games_list) == 0 and os.environ.get('GITHUB_ACTIONS', '').lower() == 'tru
 
 # --- 5. FETCH TEAM ADVANCED STATS ---
 print("Fetching Team Advanced Stats...")
-df_adv = leaguedashteamstats.LeagueDashTeamStats(measure_type_detailed_defense='Advanced', season=NBA_SEASON).get_data_frames()[0]
-df_opp = leaguedashteamstats.LeagueDashTeamStats(measure_type_detailed_defense='Opponent', season=NBA_SEASON).get_data_frames()[0]
-df_team_final = df_adv[['TEAM_ID', 'TEAM_NAME', 'PACE', 'DEF_RATING']].merge(df_opp[['TEAM_ID', 'OPP_FG3A']], on='TEAM_ID')
-df_team_final.rename(columns={'OPP_FG3A': 'OPP_3PA'}, inplace=True)
+try:
+    df_adv = leaguedashteamstats.LeagueDashTeamStats(
+        measure_type_detailed_defense='Advanced',
+        season=NBA_SEASON
+    ).get_data_frames()[0]
+    df_opp = leaguedashteamstats.LeagueDashTeamStats(
+        measure_type_detailed_defense='Opponent',
+        season=NBA_SEASON
+    ).get_data_frames()[0]
+    df_team_final = df_adv[['TEAM_ID', 'TEAM_NAME', 'PACE', 'DEF_RATING']].merge(
+        df_opp[['TEAM_ID', 'OPP_FG3A']], on='TEAM_ID'
+    )
+    df_team_final.rename(columns={'OPP_FG3A': 'OPP_3PA'}, inplace=True)
 
-nba_teams = teams.get_teams()
-team_dict = {t['id']: t['abbreviation'] for t in nba_teams}
-full_to_abbr = {t['full_name']: t['abbreviation'] for t in nba_teams}
-df_team_final['TEAM_ABBREVIATION'] = df_team_final['TEAM_ID'].map(team_dict)
+    nba_teams = teams.get_teams()
+    team_dict = {t['id']: t['abbreviation'] for t in nba_teams}
+    full_to_abbr = {t['full_name']: t['abbreviation'] for t in nba_teams}
+    df_team_final['TEAM_ABBREVIATION'] = df_team_final['TEAM_ID'].map(team_dict)
+except Exception as e:
+    print(f"⚠️ Team advanced stats unavailable — using minimal team fallback: {e}")
+    nba_teams = teams.get_teams()
+    full_to_abbr = {t['full_name']: t['abbreviation'] for t in nba_teams}
+    tonight_abbrs = sorted(set(opp_map.keys()))
+    df_team_final = pd.DataFrame({'TEAM_ABBREVIATION': tonight_abbrs})
+    df_team_final['TEAM_ID'] = pd.NA
+    df_team_final['TEAM_NAME'] = df_team_final['TEAM_ABBREVIATION']
+    df_team_final['PACE'] = np.nan
+    df_team_final['DEF_RATING'] = np.nan
+    df_team_final['OPP_3PA'] = np.nan
 
 # --- 5.1 FETCH LIVE VEGAS ODDS ---
 print("Fetching Live Vegas Odds...")
