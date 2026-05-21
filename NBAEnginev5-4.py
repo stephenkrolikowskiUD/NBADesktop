@@ -134,7 +134,50 @@ def fetch_league_gamelog_df(season, season_type, max_attempts=3):
                 time.sleep(3 * attempt)
     raise last_err
 
+def fetch_odds_api_schedule_games(game_date):
+    try:
+        resp = requests.get(
+            'https://api.the-odds-api.com/v4/sports/basketball_nba/events',
+            params={'apiKey': ODDS_API_KEY},
+            timeout=30,
+        )
+        if resp.status_code != 200:
+            print(f"   ⚠️ Odds API schedule fallback {resp.status_code}: {resp.text[:100]}")
+            return None
+        raw_games = resp.json()
+        full_to_abbr = {t['full_name']: t['abbreviation'] for t in teams.get_teams()}
+        normalized_games = []
+        for game in raw_games:
+            commence_raw = str(game.get('commence_time', '') or '').strip()
+            if not commence_raw:
+                continue
+            try:
+                commence_ts = datetime.fromisoformat(commence_raw.replace('Z', '+00:00'))
+                commence_date_est = commence_ts.astimezone(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d')
+            except Exception:
+                commence_date_est = commence_raw[:10]
+            if commence_date_est != game_date:
+                continue
+            home = full_to_abbr.get(game.get('home_team'))
+            away = full_to_abbr.get(game.get('away_team'))
+            if home and away:
+                normalized_games.append({
+                    'homeTeam': {'teamTricode': home},
+                    'awayTeam': {'teamTricode': away},
+                })
+        print(f"   ✅ Fallback schedule fetch: {len(normalized_games)} games from Odds API events")
+        return normalized_games
+    except Exception as e:
+        print(f"   ⚠️ Odds API schedule fallback failed: {e}")
+        return None
+
 def fetch_scoreboard_games(game_date, max_attempts=3):
+    if os.environ.get('GITHUB_ACTIONS', '').lower() == 'true':
+        print("   ⚠️ GitHub Actions mode — using Odds API as primary NBA schedule source")
+        odds_games = fetch_odds_api_schedule_games(game_date)
+        if odds_games is not None:
+            return odds_games, 'fallback'
+
     last_err = None
     for attempt in range(1, max_attempts + 1):
         try:
@@ -189,41 +232,9 @@ def fetch_scoreboard_games(game_date, max_attempts=3):
         except Exception as e:
             print(f"   ⚠️ Fallback schedule fetch failed from {url}: {e}")
 
-    # Final fallback: use The Odds API events list for today's NBA slate.
-    try:
-        resp = requests.get(
-            'https://api.the-odds-api.com/v4/sports/basketball_nba/events',
-            params={'apiKey': ODDS_API_KEY},
-            timeout=30,
-        )
-        if resp.status_code != 200:
-            print(f"   ⚠️ Odds API schedule fallback {resp.status_code}: {resp.text[:100]}")
-        else:
-            raw_games = resp.json()
-            full_to_abbr = {t['full_name']: t['abbreviation'] for t in teams.get_teams()}
-            normalized_games = []
-            for game in raw_games:
-                commence_raw = str(game.get('commence_time', '') or '').strip()
-                if not commence_raw:
-                    continue
-                try:
-                    commence_ts = datetime.fromisoformat(commence_raw.replace('Z', '+00:00'))
-                    commence_date_est = commence_ts.astimezone(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d')
-                except Exception:
-                    commence_date_est = commence_raw[:10]
-                if commence_date_est != game_date:
-                    continue
-                home = full_to_abbr.get(game.get('home_team'))
-                away = full_to_abbr.get(game.get('away_team'))
-                if home and away:
-                    normalized_games.append({
-                        'homeTeam': {'teamTricode': home},
-                        'awayTeam': {'teamTricode': away},
-                    })
-            print(f"   ✅ Fallback schedule fetch: {len(normalized_games)} games from Odds API events")
-            return normalized_games, 'fallback'
-    except Exception as e:
-        print(f"   ⚠️ Odds API schedule fallback failed: {e}")
+    odds_games = fetch_odds_api_schedule_games(game_date)
+    if odds_games is not None:
+        return odds_games, 'fallback'
     return [], 'unavailable'
 
 def pick_player_name(row):
