@@ -40,6 +40,7 @@ SHEET_ID = '12gBgVx_RCsIytjZHjfZWgLtG-R-zcPbYYE-CVFd4EDw'
 SNAPSHOT_DATE = "2026-05-04"
 sh = gc.open_by_key(SHEET_ID)
 print(f"✅ Connected to Google Sheet: {SHEET_ID}")
+RETRY_DNP_LOOKBACK_DAYS = 7
 
 # --- 2. LOAD DAILY_PICKS ---
 print("\nLoading Daily_Picks...")
@@ -166,22 +167,28 @@ def print_clv_summary(df_all):
 
 # --- 3. FIND UNGRADED PICKS ---
 hit_series = df_picks['HIT'].fillna('').astype(str).str.strip()
-ungraded = df_picks[hit_series == ''].copy()
+today_str = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d')
+date_series = pd.to_datetime(df_picks['DATE'], errors='coerce')
+today_ts = pd.to_datetime(today_str)
+retry_cutoff = today_ts - pd.Timedelta(days=RETRY_DNP_LOOKBACK_DAYS)
+retry_dnp_mask = (hit_series == 'DNP') & date_series.notna() & (date_series >= retry_cutoff) & (date_series <= today_ts)
+blank_ungraded_mask = (hit_series == '') & date_series.notna() & (date_series < today_ts)
+ungraded = df_picks[blank_ungraded_mask | retry_dnp_mask].copy()
 
 if ungraded.empty:
     print("✅ All picks are already graded! Nothing to do.")
     dates_to_grade = []
-
-# Only grade picks from completed dates (not today)
-today_str = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d')
-ungraded = ungraded[ungraded['DATE'] < today_str]
 
 if ungraded.empty:
     print(f"⏳ All ungraded picks are from today ({today_str}) — games haven't finished yet. Run tomorrow.")
     dates_to_grade = []
 else:
     dates_to_grade = sorted(ungraded['DATE'].unique())
-    print(f"🎯 {len(ungraded)} ungraded picks from: {', '.join(dates_to_grade)}")
+    retry_ct = int(retry_dnp_mask.sum())
+    if retry_ct > 0:
+        print(f"🎯 {len(ungraded)} gradeable picks from: {', '.join(dates_to_grade)} ({retry_ct} recent DNP retries)")
+    else:
+        print(f"🎯 {len(ungraded)} gradeable picks from: {', '.join(dates_to_grade)}")
 
 # --- 4. FETCH BOX SCORES ---
 print("\nFetching box score data...")
@@ -334,11 +341,15 @@ for idx, pick in ungraded.iterrows():
 
     line_val = safe_float(line)
     box = find_box_score(box_lookup, player, date)
+    date_has_logs = date in box_date_set
 
     # Row in the sheet (1-indexed, +1 for header)
     sheet_row = int(idx) + 2  # idx is 0-based from data rows, +1 for header, +1 for 1-index
 
     if box is None:
+        if not date_has_logs:
+            print(f"   ⏳ {player} ({date}) — logs for this date are not available yet; leaving ungraded for retry")
+            continue
         # Player didn't play (DNP, injury, etc.)
         updates.append({'range': f'{col_letter(actual_col)}{sheet_row}', 'value': 'DNP'})
         updates.append({'range': f'{col_letter(hit_col)}{sheet_row}', 'value': 'DNP'})
