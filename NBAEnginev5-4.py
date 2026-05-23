@@ -1235,6 +1235,21 @@ if GEMINI_API_KEY and len(games_list) > 0:
 
         # Build player context
         player_pool = df_tonight_sheet.copy()
+        if player_pool.empty and not df_props.empty:
+            print("WARNING: tonight sheet empty; building fallback player pool from live props")
+            player_pool = pd.DataFrame({'PLAYER_NAME': sorted(df_props['PLAYER_NAME'].dropna().astype(str).map(clean_name).unique())})
+            latest_fallback = df_player_final.copy()
+            latest_fallback['PLAYER_NAME'] = latest_fallback['PLAYER_NAME'].map(clean_name)
+            latest_fallback = latest_fallback.sort_values('GAME_DATE', ascending=False).drop_duplicates('PLAYER_NAME')
+            fallback_cols = [c for c in [
+                'PLAYER_NAME', 'TEAM_ABBREVIATION', 'CURRENT_TEAM', 'TONIGHT_OPP',
+                'OPP_DEF_RTG', 'OPP_PACE', 'OPP_3PA_ALLOWED',
+                'IMPLIED_TOTAL', 'SPREAD', 'GAME_TOTAL', 'OPP_IMPLIED_TOTAL', 'B2B'
+            ] if c in latest_fallback.columns]
+            if fallback_cols:
+                player_pool = player_pool.merge(latest_fallback[fallback_cols], on='PLAYER_NAME', how='left')
+            if 'TEAM_ABBREVIATION' not in player_pool.columns and 'CURRENT_TEAM' in player_pool.columns:
+                player_pool['TEAM_ABBREVIATION'] = player_pool['CURRENT_TEAM']
         print(f"Total tonight players: {len(player_pool)}")
         print(f"Players before dedupe: {len(player_pool)}")
         player_pool['PLAYER_NAME'] = player_pool['PLAYER_NAME'].map(clean_name)
@@ -1476,17 +1491,21 @@ IMPORTANT: Return ONLY the JSON array. No markdown, no preamble."""
         for run_idx, temp in enumerate(consensus_temps, start=1):
             gen_config = types.GenerateContentConfig(temperature=temp, max_output_tokens=8192)
             print(f"🤖 Calling Gemini API run {run_idx}/3 (temp={temp:.2f})...")
-            raw = client.models.generate_content(
-                model='gemini-2.5-flash-lite',
-                contents=prompt,
-                config=gen_config
-            ).text.strip()
             try:
+                raw = client.models.generate_content(
+                    model='gemini-2.5-flash-lite',
+                    contents=prompt,
+                    config=gen_config
+                ).text.strip()
                 run_picks = parse_gemini_json_array(raw)
                 print(f"   ↳ {len(run_picks)} picks returned")
                 consensus_pick_lists.append(run_picks)
             except json.JSONDecodeError:
                 print(f"   ⚠️ Run {run_idx} returned malformed JSON — ignoring that pass")
+            except Exception as e:
+                print(f"   ⚠️ Run {run_idx} failed: {e}")
+        if not consensus_pick_lists:
+            raise RuntimeError("All Gemini passes failed")
         picks_data = build_consensus_pick_pool(consensus_pick_lists)
         consensus_hits = sum(1 for pk in picks_data if int(pk.get('CONSENSUS_COUNT', 1) or 1) >= 2)
         print(f"🤝 Consensus merge: {len(picks_data)} unique picks, {consensus_hits} appearing in 2+ runs")
