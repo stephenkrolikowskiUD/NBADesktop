@@ -184,6 +184,67 @@ def fetch_league_gamelog_for_date(season, season_type, game_date, max_attempts=1
                 time.sleep(3 * attempt)
     raise last_err
 
+def fetch_live_boxscore_logs_for_date(game_date):
+    date_key = pd.to_datetime(game_date).strftime('%Y%m%d')
+    scoreboard_url = f'https://cdn.nba.com/static/json/liveData/scoreboard/scoreboard_{date_key}.json'
+    resp = requests.get(scoreboard_url, timeout=30)
+    resp.raise_for_status()
+    games = resp.json().get('scoreboard', {}).get('games', [])
+    rows = []
+    for game in games:
+        game_id = game.get('gameId')
+        if not game_id:
+            continue
+        home = game.get('homeTeam', {}) or {}
+        away = game.get('awayTeam', {}) or {}
+        home_tri = home.get('teamTricode', '')
+        away_tri = away.get('teamTricode', '')
+        home_pts = int(home.get('score') or 0)
+        away_pts = int(away.get('score') or 0)
+        box_url = f'https://cdn.nba.com/static/json/liveData/boxscore/boxscore_{game_id}.json'
+        try:
+            box_resp = requests.get(box_url, timeout=30)
+            box_resp.raise_for_status()
+            game_payload = box_resp.json().get('game', {})
+        except Exception as e:
+            print(f"   ⚠️ CDN boxscore {game_id} failed: {e}")
+            continue
+        for side_key, opp_tri, team_pts, opp_pts, matchup_prefix in [
+            ('homeTeam', away_tri, home_pts, away_pts, 'vs.'),
+            ('awayTeam', home_tri, away_pts, home_pts, '@'),
+        ]:
+            team_payload = game_payload.get(side_key, {}) or {}
+            team_tri = team_payload.get('teamTricode') or (home_tri if side_key == 'homeTeam' else away_tri)
+            wl = 'W' if team_pts > opp_pts else 'L' if team_pts < opp_pts else ''
+            for player in team_payload.get('players', []) or []:
+                stats = player.get('statistics', {}) or {}
+                if not stats:
+                    continue
+                rows.append({
+                    'PLAYER_ID': player.get('personId'),
+                    'PLAYER_NAME': player.get('name'),
+                    'TEAM_ABBREVIATION': team_tri,
+                    'GAME_DATE': pd.to_datetime(game_date).strftime('%Y-%m-%d'),
+                    'MATCHUP': f"{team_tri} {matchup_prefix} {opp_tri}",
+                    'GAME_OPP': opp_tri,
+                    'WL': wl,
+                    'MIN': stats.get('minutes') or '0:00',
+                    'PTS': stats.get('points', 0),
+                    'REB': stats.get('reboundsTotal', 0),
+                    'AST': stats.get('assists', 0),
+                    'STL': stats.get('steals', 0),
+                    'BLK': stats.get('blocks', 0),
+                    'TOV': stats.get('turnovers', 0),
+                    'FG3M': stats.get('threePointersMade', 0),
+                    'FG3A': stats.get('threePointersAttempted', 0),
+                    'FGA': stats.get('fieldGoalsAttempted', 0),
+                    'FTA': stats.get('freeThrowsAttempted', 0),
+                    'FGM': stats.get('fieldGoalsMade', 0),
+                })
+    df = pd.DataFrame(rows)
+    print(f"   ✅ CDN boxscores {game_date}: {len(df)} player rows")
+    return df
+
 def fetch_odds_api_schedule_games(game_date):
     try:
         resp = requests.get(
@@ -555,13 +616,23 @@ if is_github_actions and len(existing_player_logs) > 0:
     missing_dates = find_missing_player_stat_dates(sh, existing_dates, backfill_today)
     for missing_date in missing_dates[:3]:
         print(f"   🔎 Backfilling missing Player_Stats date: {missing_date}")
+        date_parts = []
         for season_type in ['Regular Season', 'Playoffs', 'PlayIn']:
             try:
                 df_tmp = fetch_league_gamelog_for_date(NBA_SEASON, season_type, missing_date)
                 if len(df_tmp) > 0:
-                    df_log_parts.append(df_tmp)
+                    date_parts.append(df_tmp)
             except Exception as e:
                 print(f"   ⚠️ Could not backfill {missing_date} {season_type}: {e}")
+        if date_parts:
+            df_log_parts.extend(date_parts)
+            continue
+        try:
+            df_tmp = fetch_live_boxscore_logs_for_date(missing_date)
+            if len(df_tmp) > 0:
+                df_log_parts.append(df_tmp)
+        except Exception as e:
+            print(f"   ⚠️ Could not backfill {missing_date} from NBA CDN boxscores: {e}")
     if df_log_parts:
         df_logs_api = pd.concat([existing_player_logs[PLAYER_LOG_BASE_COLS]] + df_log_parts, ignore_index=True)
     else:
