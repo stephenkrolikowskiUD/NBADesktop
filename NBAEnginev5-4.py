@@ -160,6 +160,30 @@ def fetch_league_gamelog_df(season, season_type, max_attempts=3):
                 time.sleep(3 * attempt)
     raise last_err
 
+def fetch_league_gamelog_for_date(season, season_type, game_date, max_attempts=1):
+    game_date_param = pd.to_datetime(game_date).strftime('%m/%d/%Y')
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = leaguegamelog.LeagueGameLog(
+                player_or_team_abbreviation='P',
+                league_id='00',
+                season=season,
+                season_type_all_star=season_type,
+                date_from_nullable=game_date_param,
+                date_to_nullable=game_date_param,
+                timeout=45,
+            )
+            df = resp.get_data_frames()[0]
+            print(f"   ✅ {season_type} {game_date}: {len(df)} rows")
+            return df
+        except Exception as e:
+            last_err = e
+            print(f"   ⚠️ {season_type} {game_date} fetch attempt {attempt}/{max_attempts} failed: {e}")
+            if attempt < max_attempts:
+                time.sleep(3 * attempt)
+    raise last_err
+
 def fetch_odds_api_schedule_games(game_date):
     try:
         resp = requests.get(
@@ -390,6 +414,30 @@ def load_existing_daily_picks(sheet, target_date):
     df['DATE'] = df['DATE'].map(normalize_pick_date)
     return df[df['DATE'] == target_date].copy()
 
+def find_missing_player_stat_dates(sheet, existing_dates, today_str, lookback_days=7):
+    try:
+        ws = sheet.worksheet('Daily_Picks')
+        rows = ws.get_all_records()
+    except Exception as e:
+        print(f"   ⚠️ Could not inspect Daily_Picks for stat backfill: {e}")
+        return []
+    if not rows:
+        return []
+    df = pd.DataFrame(rows)
+    if 'DATE' not in df.columns or 'HIT' not in df.columns:
+        return []
+    df['DATE'] = df['DATE'].map(normalize_pick_date)
+    hit_series = df['HIT'].fillna('').astype(str).str.strip()
+    date_series = pd.to_datetime(df['DATE'], errors='coerce')
+    today_ts = pd.to_datetime(today_str)
+    retry_cutoff = today_ts - pd.Timedelta(days=lookback_days)
+    needs_grade = (
+        ((hit_series == '') & date_series.notna() & (date_series < today_ts)) |
+        ((hit_series == 'DNP') & date_series.notna() & (date_series >= retry_cutoff) & (date_series <= today_ts))
+    )
+    pick_dates = sorted(set(df.loc[needs_grade, 'DATE'].dropna().astype(str)))
+    return [d for d in pick_dates if d not in existing_dates]
+
 def refresh_clv_daily_picks(sheet, target_date, props_df, timestamp_label):
     if props_df is None or props_df.empty:
         return
@@ -501,8 +549,23 @@ existing_player_logs = load_existing_player_logs('Player_Stats', PLAYER_LOG_BASE
 is_github_actions = os.environ.get('GITHUB_ACTIONS', '').lower() == 'true'
 df_log_parts = []
 if is_github_actions and len(existing_player_logs) > 0:
-    print("   ⚠️ GitHub Actions mode — using seeded Player_Stats and skipping full NBA historical refresh")
-    df_logs_api = existing_player_logs[PLAYER_LOG_BASE_COLS].copy()
+    print("   ⚠️ GitHub Actions mode — using seeded Player_Stats and checking missing pick dates")
+    backfill_today = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d')
+    existing_dates = set(existing_player_logs['GAME_DATE'].map(normalize_game_date).astype(str))
+    missing_dates = find_missing_player_stat_dates(sh, existing_dates, backfill_today)
+    for missing_date in missing_dates[:3]:
+        print(f"   🔎 Backfilling missing Player_Stats date: {missing_date}")
+        for season_type in ['Regular Season', 'Playoffs', 'PlayIn']:
+            try:
+                df_tmp = fetch_league_gamelog_for_date(NBA_SEASON, season_type, missing_date)
+                if len(df_tmp) > 0:
+                    df_log_parts.append(df_tmp)
+            except Exception as e:
+                print(f"   ⚠️ Could not backfill {missing_date} {season_type}: {e}")
+    if df_log_parts:
+        df_logs_api = pd.concat([existing_player_logs[PLAYER_LOG_BASE_COLS]] + df_log_parts, ignore_index=True)
+    else:
+        df_logs_api = existing_player_logs[PLAYER_LOG_BASE_COLS].copy()
 else:
     for season_type in ['Regular Season', 'PlayIn', 'Playoffs']:
         try:
