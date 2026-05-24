@@ -3,7 +3,7 @@ name: NBA Engine
 on:
   workflow_dispatch:
   schedule:
-    - cron: "15 6 * * *"
+    - cron: "45 5 * * *"
     - cron: "0 14 * * *"
     - cron: "0 18 * * *"
     - cron: "0 20 * * *"
