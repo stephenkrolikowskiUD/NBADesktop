@@ -6,6 +6,7 @@ import json
 import time
 import re
 import os
+import atexit
 from datetime import datetime
 import pytz
 import gspread
@@ -13,12 +14,35 @@ from google.auth import default
 from google.oauth2.service_account import Credentials
 from nba_api.stats.endpoints import leaguegamelog, leaguedashteamstats, scoreboardv3
 from nba_api.stats.static import teams
+from run_logger import RunLogger
 
 # --- 1. AUTHENTICATION & SETUP ---
 print("Authenticating with Google...")
 SHEET_NAME = 'NBA_Dashboard_Data'
 SHEET_ID = '12gBgVx_RCsIytjZHjfZWgLtG-R-zcPbYYE-CVFd4EDw'
 SNAPSHOT_DATE = "2026-05-04"
+
+SHEET_SCHEMAS = {
+    'Tonights_Opponent': {
+        'required': ['PLAYER_NAME', 'TEAM_ABBREVIATION', 'CURRENT_TEAM', 'TONIGHT_OPP',
+                     'L5_GAMES_PLAYED', 'GAMES_LAST_7D', 'LIMITED_SAMPLE', 'RETURNING'],
+        'recommended': ['OPP_DEF_RTG', 'OPP_PACE', 'B2B'],
+    },
+    'Daily_Picks': {
+        'required': ['DATE', 'RUN_NUMBER', 'rank', 'player', 'team', 'opponent',
+                     'prop_type', 'line', 'lean', 'confidence', 'rationale', 'HIT'],
+        'recommended': ['CONSENSUS_COUNT', 'CONSENSUS_RUNS'],
+    },
+    'DK_Player_Props': {
+        'required': ['PLAYER_NAME', 'METRIC', 'DK_LINE', 'OVER_ODDS', 'UNDER_ODDS'],
+        'recommended': [],
+    },
+    'Player_Stats': {
+        'required': ['PLAYER_ID', 'PLAYER_NAME', 'TEAM_ABBREVIATION', 'GAME_DATE',
+                     'PTS', 'REB', 'AST', 'STL', 'BLK', 'UD_FP', 'DK_FP'],
+        'recommended': ['L5_GAMES_PLAYED', 'GAMES_LAST_7D', 'LIMITED_SAMPLE', 'RETURNING'],
+    },
+}
 
 def get_gspread_client():
     scopes = [
@@ -61,6 +85,8 @@ gc = get_gspread_client()
 try:
     sh = gc.open_by_key(SHEET_ID)
     print(f"✅ Connected to Google Sheet: {SHEET_ID}")
+    runlog = RunLogger(gc, SHEET_ID, sport='NBA', kind='engine')
+    atexit.register(runlog.finalize_and_write)
 except Exception as e:
     print(f"❌ Error: Could not find Google Sheet with ID '{SHEET_ID}'.")
 
@@ -749,6 +775,7 @@ h2h_agg.rename(columns={c: f'H2H_{c}' for c in h2h_cols}, inplace=True)
 # --- 5.6 BUILD TONIGHT'S SHEET ---
 df_tonight_sheet = df_player_final[['PLAYER_NAME', 'CURRENT_TEAM', 'TONIGHT_OPP', 'OPP_DEF_RTG', 'OPP_PACE', 'OPP_3PA_ALLOWED']].drop_duplicates(subset=['PLAYER_NAME'])
 df_tonight_sheet.rename(columns={'CURRENT_TEAM': 'TEAM_ABBREVIATION'}, inplace=True)
+df_tonight_sheet['CURRENT_TEAM'] = df_tonight_sheet['TEAM_ABBREVIATION']
 df_tonight_sheet = df_tonight_sheet.merge(h2h_agg, on='PLAYER_NAME', how='left')
 
 if not df_odds.empty:
@@ -1738,7 +1765,33 @@ df_team_final['LAST_UPDATED'] = timestamp_pst
 # --- 7. UPLOAD ---
 print("Uploading to Google Sheets...")
 
+def validate_sheet_schema(sheet_name, df):
+    schema = SHEET_SCHEMAS.get(sheet_name) if 'SHEET_SCHEMAS' in globals() else None
+    if schema:
+        actual_cols = set(df.columns)
+        missing_required = [c for c in schema['required'] if c not in actual_cols]
+        missing_recommended = [c for c in schema['recommended'] if c not in actual_cols]
+        if missing_required:
+            msg = f"{sheet_name} missing REQUIRED columns: {missing_required}"
+            print(f"   ❌ SCHEMA VIOLATION: {msg}")
+            try:
+                runlog.warn(msg)
+            except Exception:
+                pass
+            raise RuntimeError(f"Schema validation failed for {sheet_name}: missing required {missing_required}")
+        if missing_recommended:
+            msg = f"{sheet_name} missing recommended columns: {missing_recommended}"
+            print(f"   ⚠️ SCHEMA WARNING: {msg}")
+            try:
+                runlog.warn(msg)
+            except Exception:
+                pass
+
 def safe_upload(sheet_name, df):
+    if df is None or len(df) == 0:
+        print(f"⏭️ Skipping '{sheet_name}' — no data.")
+        return
+    validate_sheet_schema(sheet_name, df)
     try:
         try:
             ws = sh.worksheet(sheet_name)
@@ -1747,6 +1800,10 @@ def safe_upload(sheet_name, df):
         ws.clear()
         ws.update([df.columns.tolist()] + [[clean_cell(v) for v in row] for row in df.values.tolist()])
         print(f"✅ Successfully updated '{sheet_name}'")
+        try:
+            runlog.record_write(sheet_name, len(df))
+        except Exception:
+            pass
         time.sleep(1)
     except Exception as e:
         print(f"❌ FAILED '{sheet_name}': {e}")
@@ -1767,6 +1824,10 @@ def normalize_date(val):
     return val
     
 def append_upload(sheet_name, df):
+    if df is None or len(df) == 0:
+        print(f"⏭️ Skipping append '{sheet_name}' — no data.")
+        return
+    validate_sheet_schema(sheet_name, df)
     try:
         try:
             ws = sh.worksheet(sheet_name)
@@ -1799,9 +1860,17 @@ def append_upload(sheet_name, df):
             else:
                 ws.append_rows(cleaned, value_input_option='RAW')
             print(f"✅ Appended {len(df)} rows to '{sheet_name}'")
+            try:
+                runlog.record_write(sheet_name, len(df))
+            except Exception:
+                pass
             return
 
         print(f"✅ Appended {len(df)} rows to '{sheet_name}'")
+        try:
+            runlog.record_write(sheet_name, len(df))
+        except Exception:
+            pass
         time.sleep(1)
     except Exception as e:
         print(f"❌ FAILED append '{sheet_name}': {e}")
@@ -1828,6 +1897,10 @@ else:
     print("ℹ️ No line movers to upload.")
 
 if not df_picks.empty:
+    try:
+        runlog.picks_generated = len(df_picks)
+    except Exception:
+        pass
     append_upload('Daily_Picks', df_picks)
 else:
     print("⚠️ Skipping Daily_Picks — no picks.")

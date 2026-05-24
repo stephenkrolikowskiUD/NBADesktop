@@ -8,10 +8,12 @@ import math
 import re
 import unicodedata
 import os, json
+import atexit
 import gspread
 from google.auth import default
 from google.oauth2.service_account import Credentials
 from nba_api.stats.endpoints import leaguegamelog
+from run_logger import RunLogger
 
 def get_gspread_client():
     scopes = [
@@ -40,6 +42,8 @@ SHEET_ID = '12gBgVx_RCsIytjZHjfZWgLtG-R-zcPbYYE-CVFd4EDw'
 SNAPSHOT_DATE = "2026-05-04"
 sh = gc.open_by_key(SHEET_ID)
 print(f"✅ Connected to Google Sheet: {SHEET_ID}")
+runlog = RunLogger(gc, SHEET_ID, sport='NBA', kind='grader')
+atexit.register(runlog.finalize_and_write)
 RETRY_DNP_LOOKBACK_DAYS = 7
 
 # --- 2. LOAD DAILY_PICKS ---
@@ -214,11 +218,11 @@ blank_ungraded_mask = (hit_series == '') & date_series.notna() & (date_series < 
 ungraded = df_picks[blank_ungraded_mask | retry_dnp_mask].copy()
 
 if ungraded.empty:
-    print("✅ All picks are already graded! Nothing to do.")
-    dates_to_grade = []
-
-if ungraded.empty:
-    print(f"⏳ All ungraded picks are from today ({today_str}) — games haven't finished yet. Run tomorrow.")
+    blanks_today = int(((hit_series == '') & date_series.notna() & (date_series >= today_ts)).sum())
+    if blanks_today > 0:
+        print(f"⏳ {blanks_today} ungraded picks from today ({today_str}) — games haven't finished yet. Run tomorrow.")
+    else:
+        print("✅ All picks are already graded! Nothing to do.")
     dates_to_grade = []
 else:
     dates_to_grade = sorted(ungraded['DATE'].unique())
@@ -262,7 +266,6 @@ try:
 except Exception as e:
     print(f"   ⚠️ Could not load Player_Stats sheet: {e}")
 
-dates_to_grade = sorted(ungraded['DATE'].unique())
 grade_dates_missing = [d for d in dates_to_grade if d not in box_date_set]
 if grade_dates_missing or not box_lookup:
     print("   🔄 Falling back to NBA API for missing dates...")
@@ -429,6 +432,11 @@ else:
 # --- 7. SUMMARY ---
 total_decided = hits + misses
 hit_rate = (hits / total_decided * 100) if total_decided > 0 else 0
+runlog.hits = hits
+runlog.misses = misses
+runlog.dnp_count = dnp
+runlog.not_found_count = not_found
+runlog.picks_graded = hits + misses
 
 print("\n" + "=" * 60)
 print("📊 GRADING COMPLETE")

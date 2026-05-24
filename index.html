@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Snapshot: 2026-04-28 -->
+<!-- Baseline: 2026-05-04 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
@@ -1188,9 +1188,34 @@ function loadAllData(){
       const overlap=cleanPicks.filter(p=>p.__normDate===d).filter(p=>tonightNames.has(normalizePlayerName(p.__pickPlayer))).length;
       if(overlap>0){latestDate=d;break}
     }
-    const datePicks=(latestDate?cleanPicks.filter(p=>p.__normDate===latestDate):[]).filter(p=>tonightNames.has(normalizePlayerName(p.__pickPlayer))).sort((a,b)=>toNum(a.rank)-toNum(b.rank));
-    const seen=new Set();st.aiPicks=datePicks.filter(p=>{const k=normalizePlayerName(p.__pickPlayer);if(!k||seen.has(k))return false;seen.add(k);return true}).map(({__pickPlayer,__normDate,...rest})=>rest);
-    st.dataVersion+=1;
+	    const datePicks=(latestDate?cleanPicks.filter(p=>p.__normDate===latestDate):[]).filter(p=>tonightNames.has(normalizePlayerName(p.__pickPlayer))).sort((a,b)=>toNum(a.rank)-toNum(b.rank));
+	    const seen=new Set();st.aiPicks=datePicks.filter(p=>{const k=normalizePlayerName(p.__pickPlayer);if(!k||seen.has(k))return false;seen.add(k);return true}).map(({__pickPlayer,__normDate,...rest})=>rest);
+	    const DASHBOARD_EXPECTS = {
+	      Tonights_Opponent: ['PLAYER_NAME', 'TEAM_ABBREVIATION', 'TONIGHT_OPP',
+	                          'RETURNING', 'LIMITED_SAMPLE', 'L5_GAMES_PLAYED', 'GAMES_LAST_7D'],
+	      Daily_Picks: ['DATE', 'RUN_NUMBER', 'player', 'prop_type', 'line', 'lean', 'confidence', 'rationale', 'HIT'],
+	      DK_Player_Props: ['PLAYER_NAME', 'METRIC', 'DK_LINE', 'OVER_ODDS', 'UNDER_ODDS'],
+	    };
+	    const _schemaSources = {
+	      Tonights_Opponent: st.tonight,
+	      Daily_Picks: cleanPicks,
+	      DK_Player_Props: st.props,
+	    };
+	    const _schemaIssues = [];
+	    for (const [sheet, expectedCols] of Object.entries(DASHBOARD_EXPECTS)) {
+	      const rows = _schemaSources[sheet];
+	      if (!rows || !rows.length) continue;
+	      const actualCols = new Set(Object.keys(rows[0]));
+	      const missing = expectedCols.filter(c => !actualCols.has(c));
+	      if (missing.length) _schemaIssues.push(`${sheet}: missing [${missing.join(', ')}]`);
+	    }
+	    if (_schemaIssues.length) {
+	      console.warn('⚠️ SCHEMA DRIFT DETECTED:');
+	      _schemaIssues.forEach(i => console.warn('  ' + i));
+	    } else {
+	      console.log('✅ Dashboard schema audit: all expected columns present');
+	    }
+	    st.dataVersion+=1;
     st.latestPickDate=latestDate;
     st.pickGuard=getPickGuard(latestDate,st.aiPicks.length);
     st.loading=false;st.loadedAt=new Date().toLocaleTimeString();
