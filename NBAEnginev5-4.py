@@ -14,7 +14,20 @@ from google.auth import default
 from google.oauth2.service_account import Credentials
 from nba_api.stats.endpoints import leaguegamelog, leaguedashteamstats, scoreboardv3
 from nba_api.stats.static import teams
-from run_logger import RunLogger
+try:
+    from run_logger import RunLogger
+except ImportError:
+    class RunLogger:
+        def __init__(self, *args, **kwargs):
+            self.picks_generated = 0
+        def record_write(self, *args, **kwargs):
+            pass
+        def warn(self, *args, **kwargs):
+            pass
+        def fail(self, *args, **kwargs):
+            pass
+        def finalize_and_write(self):
+            pass
 
 # --- 1. AUTHENTICATION & SETUP ---
 print("Authenticating with Google...")
