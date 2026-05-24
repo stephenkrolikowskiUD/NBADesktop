@@ -2,12 +2,6 @@ name: NBA Engine
 
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "45 5 * * *"
-    - cron: "0 14 * * *"
-    - cron: "0 18 * * *"
-    - cron: "0 20 * * *"
-    - cron: "0 22 * * *"
 
 jobs:
   run-nba-engine:
