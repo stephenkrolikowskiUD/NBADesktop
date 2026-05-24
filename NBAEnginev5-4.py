@@ -616,6 +616,7 @@ for game in games_list:
 current_teams = df_player_final.sort_values('GAME_DATE').groupby('PLAYER_NAME').tail(1)[['PLAYER_NAME', 'TEAM_ABBREVIATION']]
 current_teams.rename(columns={'TEAM_ABBREVIATION': 'CURRENT_TEAM'}, inplace=True)
 df_player_final = df_player_final.merge(current_teams, on='PLAYER_NAME', how='left')
+df_player_upload = df_player_final.copy()
 
 active_players = current_teams[current_teams['CURRENT_TEAM'].isin(opp_map.keys())].copy()
 active_players['TONIGHT_OPP'] = active_players['CURRENT_TEAM'].map(opp_map)
@@ -626,6 +627,7 @@ print(f"🔥 Filtered dashboard for {len(games_list)} games on {today_str}!")
 
 timestamp_pst = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d %I:%M:%S %p EST')
 df_player_final['LAST_UPDATED'] = timestamp_pst
+df_player_upload['LAST_UPDATED'] = timestamp_pst
 
 if len(games_list) == 0 and os.environ.get('GITHUB_ACTIONS', '').lower() == 'true':
     if schedule_source == 'unavailable':
@@ -1804,7 +1806,7 @@ def append_upload(sheet_name, df):
     except Exception as e:
         print(f"❌ FAILED append '{sheet_name}': {e}")
 
-safe_upload('Player_Stats', df_player_final)
+safe_upload('Player_Stats', df_player_upload)
 safe_upload('Team_Advanced', df_team_final)
 safe_upload('Tonights_Opponent', df_tonight_sheet)
 safe_upload('Teammate_Correlations', df_correlation)

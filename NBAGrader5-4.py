@@ -81,6 +81,44 @@ def current_nba_season(now=None):
     start_year = now.year if now.month >= 9 else now.year - 1
     return f"{start_year}-{str(start_year + 1)[-2:]}"
 
+def fetch_nba_gamelog_df(season, season_type, max_attempts=3):
+    last_err = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            resp = leaguegamelog.LeagueGameLog(
+                player_or_team_abbreviation='P',
+                league_id='00',
+                season=season,
+                season_type_all_star=season_type,
+                timeout=90,
+            )
+            df = resp.get_data_frames()[0]
+            print(f"   ✅ {season_type}: {len(df)} entries")
+            return df
+        except Exception as e:
+            last_err = e
+            print(f"   ⚠️ {season_type} fetch attempt {attempt}/{max_attempts} failed: {e}")
+            if attempt < max_attempts:
+                import time
+                time.sleep(3 * attempt)
+    raise last_err
+
+def normalize_pick_date(val):
+    s = str(val or "").strip()
+    if not s:
+        return ""
+    if re.match(r'^\d{4}-\d{2}-\d{2}$', s):
+        return s
+    for fmt in ('%m/%d/%Y', '%m/%d/%y', '%Y/%m/%d'):
+        try:
+            return datetime.strptime(s, fmt).strftime('%Y-%m-%d')
+        except ValueError:
+            continue
+    try:
+        return pd.to_datetime(s).strftime('%Y-%m-%d')
+    except Exception:
+        return s
+
 def normalize_person_name(name):
     text = unicodedata.normalize('NFKD', str(name or ''))
     text = ''.join(ch for ch in text if not unicodedata.combining(ch))
@@ -200,6 +238,7 @@ try:
     log_rows = ws_logs.get_all_records()
     df_logs = pd.DataFrame(log_rows)
     if len(df_logs) > 0 and {'PLAYER_NAME', 'GAME_DATE'}.issubset(df_logs.columns):
+        df_logs['GAME_DATE'] = df_logs['GAME_DATE'].map(normalize_pick_date)
         for _, row in df_logs.iterrows():
             key = (row['PLAYER_NAME'], row['GAME_DATE'])
             box_lookup[key] = {
@@ -232,19 +271,13 @@ if grade_dates_missing or not box_lookup:
     df_logs = pd.DataFrame()
     for season_type in ['Regular Season', 'Playoffs', 'PlayIn']:
         try:
-            log = leaguegamelog.LeagueGameLog(
-                player_or_team_abbreviation='P',
-                league_id='00',
-                season=season,
-                season_type_all_star=season_type
-            )
-            df_tmp = log.get_data_frames()[0]
+            df_tmp = fetch_nba_gamelog_df(season, season_type)
             if len(df_tmp) > 0:
                 df_logs = pd.concat([df_logs, df_tmp], ignore_index=True)
-                print(f"   ✅ {season_type}: {len(df_tmp)} entries")
         except Exception as e:
-            print(f"   ⚠️ {season_type}: {e}")
+            print(f"   ❌ {season_type} fetch failed after retries: {e}")
     if not df_logs.empty:
+        df_logs['GAME_DATE'] = df_logs['GAME_DATE'].map(normalize_pick_date)
         df_logs['PRA'] = pd.to_numeric(df_logs['PTS']) + pd.to_numeric(df_logs['REB']) + pd.to_numeric(df_logs['AST'])
         df_logs['PR'] = pd.to_numeric(df_logs['PTS']) + pd.to_numeric(df_logs['REB'])
         df_logs['PA'] = pd.to_numeric(df_logs['PTS']) + pd.to_numeric(df_logs['AST'])
