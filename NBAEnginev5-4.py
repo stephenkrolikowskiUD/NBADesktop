@@ -1235,8 +1235,10 @@ if GEMINI_API_KEY and len(games_list) > 0:
 
         # Build player context
         player_pool = df_tonight_sheet.copy()
+        props_fallback_used = False
         if player_pool.empty and not df_props.empty:
             print("WARNING: tonight sheet empty; building fallback player pool from live props")
+            props_fallback_used = True
             player_pool = pd.DataFrame({'PLAYER_NAME': sorted(df_props['PLAYER_NAME'].dropna().astype(str).map(clean_name).unique())})
             latest_fallback = df_player_final.copy()
             latest_fallback['PLAYER_NAME'] = latest_fallback['PLAYER_NAME'].map(clean_name)
@@ -1305,6 +1307,9 @@ if GEMINI_API_KEY and len(games_list) > 0:
                     'reason': f"excluded_hard_out_status:{status_clean}"
                 })
         filtered_pool = player_pool[pd.Series(keep_mask, index=player_pool.index)].copy()
+        if filtered_pool.empty and props_fallback_used and not player_pool.empty:
+            print("WARNING: injury/status filter emptied props fallback pool; restoring unfiltered fallback pool")
+            filtered_pool = player_pool.copy()
         print(f"Players after injury filter: {len(filtered_pool)}")
         if removed_debug:
             print("First removed players:")
@@ -1320,12 +1325,39 @@ if GEMINI_API_KEY and len(games_list) > 0:
             print(f"Players after 25+ minute filter: {len(min_qualified_pool)}")
             if not min_qualified_pool.empty:
                 prop_pool = min_qualified_pool
+        if prop_pool.empty and props_fallback_used and not filtered_pool.empty:
+            print("WARNING: downstream filters emptied props fallback pool; restoring filtered fallback pool")
+            prop_pool = filtered_pool.copy()
         print(f"Players after props filter: {len(prop_pool)}")
 
         active_players_for_gemini = prop_pool.copy()
         if len(active_players_for_gemini) == 0:
             print("WARNING: active player pool empty after filtering; falling back to tonight player pool")
             active_players_for_gemini = player_pool.copy()
+        if len(active_players_for_gemini) == 0 and not df_props.empty:
+            print("WARNING: tonight player pool still empty; building direct Gemini pool from live props")
+            active_players_for_gemini = pd.DataFrame({
+                'PLAYER_NAME': sorted(df_props['PLAYER_NAME'].dropna().astype(str).map(clean_name).unique())
+            })
+            latest_fallback = df_player_final.copy()
+            latest_fallback['PLAYER_NAME'] = latest_fallback['PLAYER_NAME'].map(clean_name)
+            latest_fallback = latest_fallback.sort_values('GAME_DATE', ascending=False).drop_duplicates('PLAYER_NAME')
+            fallback_cols = [c for c in [
+                'PLAYER_NAME', 'TEAM_ABBREVIATION', 'CURRENT_TEAM', 'TONIGHT_OPP',
+                'Seas_PTS', 'Seas_REB', 'Seas_AST', 'Seas_PRA', 'Seas_PR', 'Seas_PA', 'Seas_RA',
+                'L5_PTS', 'L5_REB', 'L5_AST', 'L5_PRA', 'L5_PR', 'L5_PA', 'L5_RA', 'L5_DK_FP',
+                'PTS_Home', 'PTS_Away', 'REB_Home', 'REB_Away', 'AST_Home', 'AST_Away',
+                'PRA_Home', 'PRA_Away', 'UD_FP_Home', 'UD_FP_Away',
+                'RETURNING', 'B2B'
+            ] if c in latest_fallback.columns]
+            if fallback_cols:
+                active_players_for_gemini = active_players_for_gemini.merge(
+                    latest_fallback[fallback_cols], on='PLAYER_NAME', how='left'
+                )
+            if 'TEAM_ABBREVIATION' not in active_players_for_gemini.columns:
+                active_players_for_gemini['TEAM_ABBREVIATION'] = ""
+            if 'TONIGHT_OPP' not in active_players_for_gemini.columns:
+                active_players_for_gemini['TONIGHT_OPP'] = "?"
         sort_col = 'Seas_UD_FP' if 'Seas_UD_FP' in active_players_for_gemini.columns else 'Seas_PRA'
         active_players_for_gemini = active_players_for_gemini.sort_values(sort_col, ascending=False).copy()
         star_source = prop_pool.copy() if len(prop_pool) else active_players_for_gemini.copy()
