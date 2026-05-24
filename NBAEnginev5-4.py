@@ -773,7 +773,9 @@ h2h_agg = df_h2h_matches.groupby('PLAYER_NAME')[h2h_cols].mean().round(2).reset_
 h2h_agg.rename(columns={c: f'H2H_{c}' for c in h2h_cols}, inplace=True)
 
 # --- 5.6 BUILD TONIGHT'S SHEET ---
-df_tonight_sheet = df_player_final[['PLAYER_NAME', 'CURRENT_TEAM', 'TONIGHT_OPP', 'OPP_DEF_RTG', 'OPP_PACE', 'OPP_3PA_ALLOWED']].drop_duplicates(subset=['PLAYER_NAME'])
+tonight_cols = ['PLAYER_NAME', 'CURRENT_TEAM', 'TONIGHT_OPP', 'OPP_DEF_RTG', 'OPP_PACE', 'OPP_3PA_ALLOWED',
+                'L5_GAMES_PLAYED', 'GAMES_LAST_7D', 'LIMITED_SAMPLE', 'RETURNING']
+df_tonight_sheet = df_player_final[[c for c in tonight_cols if c in df_player_final.columns]].drop_duplicates(subset=['PLAYER_NAME'])
 df_tonight_sheet.rename(columns={'CURRENT_TEAM': 'TEAM_ABBREVIATION'}, inplace=True)
 df_tonight_sheet['CURRENT_TEAM'] = df_tonight_sheet['TEAM_ABBREVIATION']
 df_tonight_sheet = df_tonight_sheet.merge(h2h_agg, on='PLAYER_NAME', how='left')
