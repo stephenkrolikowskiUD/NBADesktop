@@ -27,4 +27,4 @@ jobs:
           python -m pip install pandas numpy pytz gspread google-auth nba_api
 
       - name: Run NBA grader
-        run: python NBAGrader5-4.py
+        run: python -u NBAGrader5-4.py

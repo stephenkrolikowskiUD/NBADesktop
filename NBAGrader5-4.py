@@ -232,6 +232,10 @@ else:
     else:
         print(f"🎯 {len(ungraded)} gradeable picks from: {', '.join(dates_to_grade)}")
 
+if not dates_to_grade:
+    print("\n⏭️ No gradeable NBA pick dates — skipping box score fetch.")
+    raise SystemExit(0)
+
 # --- 4. FETCH BOX SCORES ---
 print("\nFetching box score data...")
 box_lookup = {}
