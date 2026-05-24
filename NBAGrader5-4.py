@@ -13,7 +13,24 @@ import gspread
 from google.auth import default
 from google.oauth2.service_account import Credentials
 from nba_api.stats.endpoints import leaguegamelog
-from run_logger import RunLogger
+try:
+    from run_logger import RunLogger
+except ImportError:
+    class RunLogger:
+        def __init__(self, *args, **kwargs):
+            self.hits = 0
+            self.misses = 0
+            self.dnp_count = 0
+            self.not_found_count = 0
+            self.picks_graded = 0
+        def record_write(self, *args, **kwargs):
+            pass
+        def warn(self, *args, **kwargs):
+            pass
+        def fail(self, *args, **kwargs):
+            pass
+        def finalize_and_write(self):
+            pass
 
 def get_gspread_client():
     scopes = [
