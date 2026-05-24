@@ -271,7 +271,10 @@ except Exception as e:
     print(f"   ⚠️ Could not load Player_Stats sheet: {e}")
 
 grade_dates_missing = [d for d in dates_to_grade if d not in box_date_set]
-if grade_dates_missing or not box_lookup:
+if (grade_dates_missing or not box_lookup) and os.environ.get('GITHUB_ACTIONS') == 'true':
+    print(f"   ⚠️ Missing seeded Player_Stats dates: {', '.join(grade_dates_missing) if grade_dates_missing else 'all grade dates'}")
+    print("   ⏭️ GitHub Actions mode — skipping stats.nba.com fallback; unavailable picks stay ungraded for retry.")
+elif grade_dates_missing or not box_lookup:
     print("   🔄 Falling back to NBA API for missing dates...")
     season = current_nba_season()
     print(f"   Using NBA season: {season}")
