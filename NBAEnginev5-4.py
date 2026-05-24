@@ -1677,6 +1677,12 @@ IMPORTANT: Return ONLY the JSON array. No markdown, no preamble."""
         df_picks['CLV_LAST_UPDATE'] = timestamp_pst
         df_picks['DATA_SOURCE'] = 'props_validated' if len(prop_pool) > 0 else 'stats_fallback'
         df_picks['matchup'] = df_picks['game']
+        if 'opponent' not in df_picks.columns:
+            df_picks['opponent'] = ''
+        df_picks['opponent'] = df_picks.apply(
+            lambda r: next((part.strip() for part in re.split(r'\s+@\s+|\s+vs\.?\s+', str(r.get('game', ''))) if part.strip() and part.strip() != str(r.get('team', '')).strip()), r.get('opponent', '')),
+            axis=1
+        )
         df_picks['reasoning'] = df_picks['rationale']
         df_picks['source'] = df_picks['DATA_SOURCE']
         if 'CONSENSUS_COUNT' not in df_picks.columns:
