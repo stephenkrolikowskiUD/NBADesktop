@@ -140,6 +140,56 @@ def get_nba_season(now=None):
     start_year = now.year if now.month >= 9 else now.year - 1
     return f"{start_year}-{str(start_year + 1)[-2:]}"
 
+def get_nba_season_phase(today_str: str, games_list: list) -> str:
+    phase_priority = {
+        'Offseason': 0,
+        'Regular Season': 1,
+        'Play-In Tournament': 2,
+        'Playoffs': 3,
+    }
+    phase_counts = {}
+    for game in games_list or []:
+        raw_values = [
+            game.get('seasonType'),
+            game.get('season_type'),
+            game.get('seasonTypeText'),
+            game.get('gameLabel'),
+            game.get('gameSubtype'),
+            game.get('seriesText'),
+            game.get('gameStatusText'),
+        ]
+        nested = game.get('gameEt', {}) if isinstance(game.get('gameEt'), dict) else {}
+        raw_values.extend([nested.get('seasonType'), nested.get('seasonTypeText')])
+        text = ' '.join(str(v or '') for v in raw_values).lower()
+        phase = None
+        if 'playoff' in text or 'postseason' in text:
+            phase = 'Playoffs'
+        elif 'play-in' in text or 'play in' in text or 'playin' in text:
+            phase = 'Play-In Tournament'
+        elif 'regular' in text:
+            phase = 'Regular Season'
+        if phase:
+            phase_counts[phase] = phase_counts.get(phase, 0) + 1
+    if phase_counts:
+        return sorted(
+            phase_counts.items(),
+            key=lambda kv: (kv[1], phase_priority.get(kv[0], 0)),
+            reverse=True,
+        )[0][0]
+
+    try:
+        dt = pd.to_datetime(today_str).date()
+    except Exception:
+        print("⚠️ NBA season phase unavailable — defaulting to Regular Season")
+        return 'Regular Season'
+    if dt.month in (5, 6):
+        return 'Playoffs'
+    if dt.month == 4 and dt.day >= 15:
+        return 'Play-In Tournament'
+    if dt.month in (10, 11, 12, 1, 2, 3) or (dt.month == 4 and dt.day < 15):
+        return 'Regular Season'
+    return 'Offseason'
+
 def clean_name(val):
     return str(val or "").strip()
 
@@ -1808,7 +1858,8 @@ if GEMINI_API_KEY and len(games_list) > 0:
         games_str = json.dumps(unique_games, indent=2, default=str)
         valid_player_name_map = {normalizePlayerName(n): n for n in active_players_for_gemini['PLAYER_NAME'].tolist() if clean_name(n)}
 
-        prompt = f"""You are an expert NBA props analyst. Today is {today_str}. NBA Playoffs.
+        season_phase = get_nba_season_phase(today_str, games_list)
+        prompt = f"""You are an expert NBA props analyst. Today is {today_str}. NBA {season_phase}.
 
 TONIGHT'S GAMES:
 {games_str}
@@ -1828,7 +1879,7 @@ RULES:
 - STAR players are the top 20 by season UD fantasy points in tonight's valid prop pool.
 - At least 5 of your 10 picks should come from STAR players. Bench players can fill the remaining slots only when they have exceptional edges.
 - Available prop types: PTS, REB, PRA, PR, PA, RA, FG3M, STL, BLK, UD_FP
-- Do NOT pick AST — 29% cumulative hit rate, confirmed losing market.
+- Do NOT pick AST — observed ~29% hit rate during NBA playoffs (slower pace, more isolation offense). Hard blacklist for playoffs and play-in. Revisit when regular season returns.
 - DIVERSIFY prop types: max 3 picks of the same prop type per slate. Mix in PTS, REB, FG3M, and the cleanest combo props.
 - Prefer PR over PRA when both are available for the same player.
 - PRA requires a stronger edge threshold than other props. If the PRA edge is only marginal, use LEAN or skip it.
