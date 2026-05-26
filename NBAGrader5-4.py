@@ -9,10 +9,17 @@ import re
 import unicodedata
 import os, json
 import atexit
+import sys
+import subprocess
 import gspread
 from google.auth import default
 from google.oauth2.service_account import Credentials
-from nba_api.stats.endpoints import leaguegamelog
+try:
+    from nba_api.stats.endpoints import leaguegamelog
+except ImportError:
+    print("📦 Installing missing nba_api package...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", "nba_api"])
+    from nba_api.stats.endpoints import leaguegamelog
 try:
     from run_logger import RunLogger
 except ImportError:
