@@ -1091,7 +1091,9 @@ BOOKMAKER = 'draftkings'
 PROP_BOOKMAKER = 'draftkings'
 FALLBACK_BOOKMAKER = 'fanduel'
 THIN_MARKET_THRESHOLD = 5
-SUPPORTED_BOOKMAKERS = ['draftkings', 'fanduel', 'betmgm', 'caesars', 'espnbet']
+# Caesars was dropped on 2026-05-27 — returned 0/0 best-book wins in production verification.
+# May be worth re-adding after 6/1 reset to re-test (could have been a one-day API issue).
+SUPPORTED_BOOKMAKERS = ['draftkings', 'fanduel', 'betmgm', 'espnbet']
 REFERENCE_BOOKMAKER = 'draftkings'
 BEST_BOOK_TIE_BREAK = 'alpha'
 
