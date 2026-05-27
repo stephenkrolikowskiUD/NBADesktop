@@ -69,6 +69,31 @@ print(f"✅ Connected to Google Sheet: {SHEET_ID}")
 runlog = RunLogger(gc, SHEET_ID, sport='NBA', kind='grader')
 atexit.register(runlog.finalize_and_write)
 RETRY_DNP_LOOKBACK_DAYS = 7
+eastern = pytz.timezone('US/Eastern')
+now_est = datetime.now(eastern)
+today_str = now_est.strftime('%Y-%m-%d')
+timestamp_est = now_est.strftime('%Y-%m-%d %I:%M:%S %p EST')
+PICK_PERF_MIN_SAMPLE = 25
+PICK_PERF_STANDARD_ODDS = -115
+PICK_PERF_WILSON_Z = 1.96
+PICK_PERF_DRIFT_ALERT_PP = 10
+PICK_PERF_TIME_WINDOWS = {
+    'last_7d': 7,
+    'last_30d': 30,
+    'last_90d': 90,
+    'all_time': None,
+}
+PICK_PERF_SNAPSHOT_WINDOWS = ('all_time', 'last_30d')
+PICK_PERF_DIMENSIONS = (
+    'confidence_norm',
+    'prop_type_norm',
+    'lean_norm',
+    'consensus_bucket',
+    'clv_bucket',
+    'has_lineup_risk',
+    'day_of_week',
+    'RUN_NUMBER',
+)
 
 # --- 2. LOAD DAILY_PICKS ---
 print("\nLoading Daily_Picks...")
@@ -230,6 +255,300 @@ def print_clv_summary(df_all):
     if not neg_df.empty:
         neg_hits = len(neg_df[neg_df['HIT'] == 'YES'])
         print(f"   Flat/Negative CLV: {neg_hits}-{len(neg_df)-neg_hits} ({neg_hits/len(neg_df)*100:.0f}%) | Avg {neg_df['clv_edge'].mean():+.2f}")
+
+PICK_PERFORMANCE_COLUMNS = [
+    'DIMENSION_TYPE', 'DIMENSION_VALUE', 'TIME_WINDOW',
+    'N_PICKS', 'N_PICKS_DECISIVE', 'N_HITS', 'N_MISSES', 'N_PUSHES', 'N_DNP',
+    'HIT_RATE', 'HIT_RATE_RAW', 'PUSH_RATE', 'DNP_RATE',
+    'ROI_FLAT', 'ROI_PER_PICK',
+    'AVG_CLV_EDGE', 'CLV_POSITIVE_RATE', 'CLV_POS_HIT_RATE', 'CLV_NEG_HIT_RATE',
+    'WILSON_LOWER_95', 'MIN_SAMPLE_FLAG',
+    'LAST_UPDATED',
+]
+PICK_PERFORMANCE_SNAPSHOT_COLUMNS = ['SNAPSHOT_DATE', 'METRIC_KEY', 'METRIC_VALUE', 'N_PICKS', 'TIME_WINDOW']
+
+def normalize_prop_metric(metric):
+    text = str(metric or '').strip().upper()
+    text = re.sub(r"\s+", "", text)
+    if text == 'BATTER_SO':
+        return 'SO'
+    return text
+
+def normalize_confidence(val):
+    conf = str(val or '').strip().upper()
+    return conf if conf in {'SMASH', 'STRONG', 'LEAN'} else 'LEAN'
+
+def pick_perf_clean_cell(val):
+    if hasattr(val, 'item'):
+        val = val.item()
+    if val is None:
+        return ''
+    if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+        return ''
+    return val
+
+def pick_perf_safe_upload(spreadsheet, sheet_name, df):
+    if df is None or df.empty:
+        print(f"   ⏭️  {sheet_name}: No data — skipped")
+        return False
+    df_clean = df.copy().replace([np.inf, -np.inf], np.nan).fillna('')
+    values = [df_clean.columns.tolist()] + [
+        [pick_perf_clean_cell(v) for v in row]
+        for row in df_clean.values.tolist()
+    ]
+    try:
+        try:
+            ws_out = spreadsheet.worksheet(sheet_name)
+            ws_out.clear()
+        except gspread.exceptions.WorksheetNotFound:
+            ws_out = spreadsheet.add_worksheet(title=sheet_name, rows=max(len(values), 100), cols=max(len(df_clean.columns), 26))
+        if ws_out.row_count < len(values) or ws_out.col_count < len(df_clean.columns):
+            ws_out.resize(rows=max(len(values), ws_out.row_count), cols=max(len(df_clean.columns), ws_out.col_count))
+        ws_out.update(values, value_input_option='RAW')
+        print(f"   ✅ {sheet_name}: {len(df_clean)} rows × {len(df_clean.columns)} cols")
+        return True
+    except Exception as e:
+        print(f"   ❌ {sheet_name}: {e}")
+        return False
+
+def pick_perf_append_upload(spreadsheet, sheet_name, df):
+    if df is None or df.empty:
+        print(f"   ⏭️  {sheet_name}: No snapshot rows — skipped")
+        return False
+    df_clean = df.copy().replace([np.inf, -np.inf], np.nan).fillna('')
+    rows = [[pick_perf_clean_cell(v) for v in row] for row in df_clean.values.tolist()]
+    try:
+        try:
+            ws_out = spreadsheet.worksheet(sheet_name)
+            existing = ws_out.get_all_values()
+        except gspread.exceptions.WorksheetNotFound:
+            ws_out = spreadsheet.add_worksheet(title=sheet_name, rows=max(len(rows) + 1, 100), cols=max(len(df_clean.columns), 26))
+            existing = []
+        if not existing:
+            ws_out.update([df_clean.columns.tolist()], value_input_option='RAW')
+        if ws_out.col_count < len(df_clean.columns):
+            ws_out.resize(rows=ws_out.row_count, cols=len(df_clean.columns))
+        ws_out.append_rows(rows, value_input_option='RAW')
+        print(f"   ✅ {sheet_name}: appended {len(rows)} rows")
+        return True
+    except Exception as e:
+        print(f"   ❌ {sheet_name}: {e}")
+        return False
+
+def wilson_lower_bound(p, n, z=PICK_PERF_WILSON_Z):
+    if n <= 0:
+        return 0.0
+    denom = 1 + z * z / n
+    centre = p + z * z / (2 * n)
+    margin = z * math.sqrt((p * (1 - p) + z * z / (4 * n)) / n)
+    return max(0.0, (centre - margin) / denom)
+
+def pick_perf_rate(hits, misses):
+    denom = hits + misses
+    return hits / denom if denom > 0 else np.nan
+
+def pick_perf_prepare_df(df_all):
+    if df_all is None or df_all.empty or 'HIT' not in df_all.columns:
+        return pd.DataFrame()
+    df = df_all[df_all['HIT'].isin(['YES', 'NO', 'PUSH', 'DNP'])].copy()
+    if df.empty:
+        return df
+    idx = df.index
+    df['player_norm'] = df.get('player', pd.Series('', index=idx)).map(normalize_person_name)
+    df['prop_type_norm'] = df.get('prop_type', pd.Series('', index=idx)).map(normalize_prop_metric)
+    df['lean_norm'] = df.get('lean', pd.Series('', index=idx)).fillna('').astype(str).str.upper().replace({'FADE': 'UNDER'})
+    df['confidence_norm'] = df.get('confidence', pd.Series('', index=idx)).map(normalize_confidence)
+    df['clv_open_f'] = pd.to_numeric(df.get('CLV_OPEN_LINE', pd.Series(np.nan, index=idx)), errors='coerce')
+    df['clv_latest_f'] = pd.to_numeric(df.get('CLV_LATEST_LINE', pd.Series(np.nan, index=idx)), errors='coerce')
+    df['clv_edge'] = np.where(df['lean_norm'] == 'UNDER', df['clv_open_f'] - df['clv_latest_f'], df['clv_latest_f'] - df['clv_open_f'])
+    df['clv_edge'] = pd.to_numeric(df['clv_edge'], errors='coerce')
+    df['clv_bucket'] = np.where(df['clv_edge'].isna(), 'unknown', np.where(df['clv_edge'] > 0, 'positive', np.where(df['clv_edge'] < 0, 'negative', 'flat')))
+    df['consensus_bucket'] = pd.to_numeric(df.get('CONSENSUS_COUNT', pd.Series(1, index=idx)), errors='coerce').fillna(1).astype(int)
+    df['has_lineup_risk'] = df.get('injury_context', pd.Series('', index=idx)).fillna('').astype(str).str.strip().str.startswith('LINEUP RISK')
+    df['date_parsed'] = pd.to_datetime(df.get('DATE', pd.Series('', index=idx)), errors='coerce')
+    bad_dates = int(df['date_parsed'].isna().sum())
+    if bad_dates:
+        print(f"   ⚠️ Pick_Performance: {bad_dates} graded rows have unparseable DATE and count only all_time")
+    df['day_of_week'] = df['date_parsed'].dt.strftime('%a').fillna('unknown')
+    if 'RUN_NUMBER' not in df.columns:
+        df['RUN_NUMBER'] = 'unknown'
+    else:
+        df['RUN_NUMBER'] = df['RUN_NUMBER'].replace('', np.nan).fillna('unknown').astype(str)
+    return df
+
+def pick_perf_metrics_row(df_slice, dim_type, dim_value, window_name):
+    n_picks = len(df_slice)
+    n_hits = int((df_slice['HIT'] == 'YES').sum())
+    n_misses = int((df_slice['HIT'] == 'NO').sum())
+    n_pushes = int((df_slice['HIT'] == 'PUSH').sum())
+    n_dnp = int((df_slice['HIT'] == 'DNP').sum())
+    n_decisive = n_picks - n_dnp
+    hit_rate = pick_perf_rate(n_hits, n_misses)
+    hit_rate_raw = n_hits / n_decisive if n_decisive > 0 else np.nan
+    roi_flat = (n_hits * (100 / abs(PICK_PERF_STANDARD_ODDS)) - n_misses) * 100
+    roi_per_pick = roi_flat / n_decisive if n_decisive > 0 else np.nan
+    clv_numeric = df_slice.dropna(subset=['clv_edge'])
+    clv_pos = df_slice[df_slice['clv_edge'] > 0]
+    clv_neg = df_slice[df_slice['clv_edge'].notna() & (df_slice['clv_edge'] <= 0)]
+    pos_hits = int((clv_pos['HIT'] == 'YES').sum())
+    pos_misses = int((clv_pos['HIT'] == 'NO').sum())
+    neg_hits = int((clv_neg['HIT'] == 'YES').sum())
+    neg_misses = int((clv_neg['HIT'] == 'NO').sum())
+    wilson_n = n_hits + n_misses
+    wilson_p = n_hits / wilson_n if wilson_n > 0 else 0
+    return {
+        'DIMENSION_TYPE': dim_type,
+        'DIMENSION_VALUE': '' if dim_value is None else str(dim_value),
+        'TIME_WINDOW': window_name,
+        'N_PICKS': n_picks,
+        'N_PICKS_DECISIVE': n_decisive,
+        'N_HITS': n_hits,
+        'N_MISSES': n_misses,
+        'N_PUSHES': n_pushes,
+        'N_DNP': n_dnp,
+        'HIT_RATE': round(hit_rate, 3) if pd.notna(hit_rate) else np.nan,
+        'HIT_RATE_RAW': round(hit_rate_raw, 3) if pd.notna(hit_rate_raw) else np.nan,
+        'PUSH_RATE': round(n_pushes / n_picks, 3) if n_picks else 0,
+        'DNP_RATE': round(n_dnp / n_picks, 3) if n_picks else 0,
+        'ROI_FLAT': round(roi_flat, 3),
+        'ROI_PER_PICK': round(roi_per_pick, 3) if pd.notna(roi_per_pick) else np.nan,
+        'AVG_CLV_EDGE': round(clv_numeric['clv_edge'].mean(), 3) if not clv_numeric.empty else np.nan,
+        'CLV_POSITIVE_RATE': round((clv_numeric['clv_edge'] > 0).mean(), 3) if not clv_numeric.empty else np.nan,
+        'CLV_POS_HIT_RATE': round(pick_perf_rate(pos_hits, pos_misses), 3) if pd.notna(pick_perf_rate(pos_hits, pos_misses)) else np.nan,
+        'CLV_NEG_HIT_RATE': round(pick_perf_rate(neg_hits, neg_misses), 3) if pd.notna(pick_perf_rate(neg_hits, neg_misses)) else np.nan,
+        'WILSON_LOWER_95': round(wilson_lower_bound(wilson_p, wilson_n), 3),
+        'MIN_SAMPLE_FLAG': bool(n_decisive >= PICK_PERF_MIN_SAMPLE),
+        'LAST_UPDATED': timestamp_est,
+    }
+
+def pick_perf_window_df(df, window_name, days, today):
+    if days is None:
+        return df.copy()
+    cutoff = pd.Timestamp(today - timedelta(days=days))
+    return df[df['date_parsed'].notna() & (df['date_parsed'] >= cutoff)].copy()
+
+def build_pick_performance_metrics(df_all):
+    df = pick_perf_prepare_df(df_all)
+    if df.empty:
+        return pd.DataFrame(columns=PICK_PERFORMANCE_COLUMNS), df
+    today = datetime.now(pytz.timezone('US/Eastern')).date()
+    rows = []
+    for window_name, days in PICK_PERF_TIME_WINDOWS.items():
+        win_df = pick_perf_window_df(df, window_name, days, today)
+        if win_df.empty:
+            continue
+        rows.append(pick_perf_metrics_row(win_df, 'overall', '', window_name))
+        for dim in PICK_PERF_DIMENSIONS:
+            if dim not in win_df.columns:
+                continue
+            for dim_value, grp in win_df.groupby(dim, dropna=False):
+                rows.append(pick_perf_metrics_row(grp, dim, dim_value, window_name))
+    metrics_df = pd.DataFrame(rows, columns=PICK_PERFORMANCE_COLUMNS)
+    if metrics_df.empty:
+        return metrics_df, df
+    window_order = {name: i for i, name in enumerate(PICK_PERF_TIME_WINDOWS.keys())}
+    metrics_df['_window_order'] = metrics_df['TIME_WINDOW'].map(window_order).fillna(99)
+    metrics_df = metrics_df.sort_values(['_window_order', 'DIMENSION_TYPE', 'WILSON_LOWER_95'], ascending=[True, True, False])
+    metrics_df = metrics_df.drop(columns=['_window_order']).reset_index(drop=True)
+    return metrics_df, df
+
+def build_snapshot_rows(metrics_df, snapshot_date):
+    if metrics_df is None or metrics_df.empty:
+        return []
+    rows = []
+    snap = metrics_df[metrics_df['TIME_WINDOW'].isin(PICK_PERF_SNAPSHOT_WINDOWS)].copy()
+    for _, row in snap.iterrows():
+        dim_type = row['DIMENSION_TYPE']
+        dim_val = str(row['DIMENSION_VALUE'])
+        key_suffix = 'overall' if dim_type == 'overall' else f"{dim_type.replace('_norm', '')}.{dim_val}"
+        rows.append({'SNAPSHOT_DATE': snapshot_date, 'METRIC_KEY': f"hit_rate.{key_suffix}", 'METRIC_VALUE': row['HIT_RATE'], 'N_PICKS': row['N_PICKS_DECISIVE'], 'TIME_WINDOW': row['TIME_WINDOW']})
+        if dim_type in {'overall', 'confidence_norm'}:
+            rows.append({'SNAPSHOT_DATE': snapshot_date, 'METRIC_KEY': f"roi_per_pick.{key_suffix}", 'METRIC_VALUE': row['ROI_PER_PICK'], 'N_PICKS': row['N_PICKS_DECISIVE'], 'TIME_WINDOW': row['TIME_WINDOW']})
+    return rows
+
+def snapshot_already_exists(spreadsheet, snapshot_date):
+    try:
+        ws_snap = spreadsheet.worksheet('Pick_Performance_Snapshots')
+        rows = ws_snap.get_all_records()
+    except gspread.exceptions.WorksheetNotFound:
+        return False
+    except Exception as e:
+        print(f"   ⚠️ Snapshot check failed: {e}")
+        return False
+    if not rows:
+        return False
+    df_snap = pd.DataFrame(rows)
+    return 'SNAPSHOT_DATE' in df_snap.columns and str(snapshot_date) in set(df_snap['SNAPSHOT_DATE'].astype(str))
+
+def print_pick_performance_summary(metrics_df, sport):
+    print("\n" + "=" * 60)
+    print(f"📊 PICK PERFORMANCE — {sport}")
+    print("=" * 60)
+    if metrics_df is None or metrics_df.empty:
+        print("   No graded picks to analyze.")
+        print("=" * 60)
+        return
+    overall_all = metrics_df[(metrics_df['DIMENSION_TYPE'] == 'overall') & (metrics_df['TIME_WINDOW'] == 'all_time')]
+    overall_30 = metrics_df[(metrics_df['DIMENSION_TYPE'] == 'overall') & (metrics_df['TIME_WINDOW'] == 'last_30d')]
+    def fmt_row(df_row):
+        if df_row.empty:
+            return "n/a"
+        r = df_row.iloc[0]
+        return f"{r['HIT_RATE'] * 100:.1f}% (n={int(r['N_PICKS_DECISIVE'])})" if pd.notna(r['HIT_RATE']) else f"n/a (n={int(r['N_PICKS_DECISIVE'])})"
+    print(f"   Overall:       {fmt_row(overall_all)}  |  last 30d: {fmt_row(overall_30)}")
+    conf = metrics_df[(metrics_df['DIMENSION_TYPE'] == 'confidence_norm') & (metrics_df['TIME_WINDOW'] == 'all_time')]
+    for tier in ['SMASH', 'STRONG', 'LEAN']:
+        row = conf[conf['DIMENSION_VALUE'] == tier]
+        if not row.empty:
+            print(f"   {tier:<14} {fmt_row(row)}")
+    prop = metrics_df[(metrics_df['DIMENSION_TYPE'] == 'prop_type_norm') & (metrics_df['TIME_WINDOW'] == 'all_time') & (metrics_df['MIN_SAMPLE_FLAG'] == True)].copy()
+    if not prop.empty:
+        top = prop.sort_values('WILSON_LOWER_95', ascending=False).head(5)
+        worst = prop.sort_values('WILSON_LOWER_95', ascending=True).head(5)
+        print("\n   ✅ Top prop types (all-time, Wilson LB):")
+        for _, r in top.iterrows():
+            print(f"      {r['DIMENSION_VALUE']:<8} {r['HIT_RATE'] * 100:.1f}% (n={int(r['N_PICKS_DECISIVE'])})   LB={r['WILSON_LOWER_95']:.3f}")
+        print("\n   🚨 Worst prop types (all-time, Wilson LB):")
+        for _, r in worst.iterrows():
+            print(f"      {r['DIMENSION_VALUE']:<8} {r['HIT_RATE'] * 100:.1f}% (n={int(r['N_PICKS_DECISIVE'])})   LB={r['WILSON_LOWER_95']:.3f}")
+    alerts = []
+    all_time = metrics_df[metrics_df['TIME_WINDOW'] == 'all_time']
+    last_30 = metrics_df[metrics_df['TIME_WINDOW'] == 'last_30d']
+    for _, r30 in last_30[last_30['MIN_SAMPLE_FLAG'] == True].iterrows():
+        rall = all_time[
+            (all_time['DIMENSION_TYPE'] == r30['DIMENSION_TYPE']) &
+            (all_time['DIMENSION_VALUE'] == r30['DIMENSION_VALUE']) &
+            (all_time['MIN_SAMPLE_FLAG'] == True)
+        ]
+        if rall.empty or pd.isna(r30['HIT_RATE']) or pd.isna(rall.iloc[0]['HIT_RATE']):
+            continue
+        delta = (r30['HIT_RATE'] - rall.iloc[0]['HIT_RATE']) * 100
+        if abs(delta) >= PICK_PERF_DRIFT_ALERT_PP:
+            label = r30['DIMENSION_TYPE'].replace('_norm', '')
+            alerts.append(f"{label}.{r30['DIMENSION_VALUE']}: 30d={r30['HIT_RATE']*100:.1f}% vs all-time={rall.iloc[0]['HIT_RATE']*100:.1f}% (Δ={delta:+.1f}pp)")
+    print("\n   ⚠️ Drift alerts:")
+    if alerts:
+        for alert in alerts[:8]:
+            print(f"      {alert}")
+    else:
+        print("      none")
+    print("=" * 60)
+
+def run_pick_performance_section(df_all, sport):
+    metrics_df, prepared_df = build_pick_performance_metrics(df_all)
+    if prepared_df.empty:
+        print("\n📊 Pick_Performance: no graded picks to analyze.")
+        return
+    wrote_perf = pick_perf_safe_upload(sh, 'Pick_Performance', metrics_df)
+    snapshot_date = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d')
+    if snapshot_already_exists(sh, snapshot_date):
+        print(f"   ⏭️  Pick_Performance_Snapshots: snapshot already exists for {snapshot_date}")
+    else:
+        snapshot_df = pd.DataFrame(build_snapshot_rows(metrics_df, snapshot_date), columns=PICK_PERFORMANCE_SNAPSHOT_COLUMNS)
+        pick_perf_append_upload(sh, 'Pick_Performance_Snapshots', snapshot_df)
+    print_pick_performance_summary(metrics_df, sport)
+    if wrote_perf:
+        print("   📈 Pick_Performance written.")
 
 # --- 3. FIND UNGRADED PICKS ---
 hit_series = df_picks['HIT'].fillna('').astype(str).str.strip()
@@ -557,5 +876,6 @@ if 'HIT' in df_all.columns:
 
     print_clv_summary(df_all)
     print_winning_combo_tracker(df_all, dates_to_grade)
+    run_pick_performance_section(df_all, 'NBA')
 
 print("\n🎯 Done! Run this every morning after games.")
