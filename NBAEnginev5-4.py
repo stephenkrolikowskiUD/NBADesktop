@@ -42,6 +42,52 @@ print("Authenticating with Google...")
 SHEET_NAME = 'NBA_Dashboard_Data'
 SHEET_ID = '12gBgVx_RCsIytjZHjfZWgLtG-R-zcPbYYE-CVFd4EDw'
 SNAPSHOT_DATE = "2026-05-04"
+SPORT_LABEL = "NBA"
+
+# --- Odds API quota guard ---
+QUOTA_FLOOR_GLOBAL = 2000
+QUOTA_FLOOR_THIS_SPORT = {
+    "MLB": 1000,
+    "NBA": 800,
+    "NHL": 600,
+    "WNBA": 500,
+    "WC": 600,
+}[SPORT_LABEL]
+CACHE_DIR = os.path.expanduser("~/.dfs_engines_cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
+CACHE_TTL_SECONDS = {
+    "MLB": 900,
+    "NBA": 900,
+    "NHL": 900,
+    "WNBA": 1800,
+    "WC": 1800,
+}[SPORT_LABEL]
+
+
+def check_quota_or_abort(resp, context: str) -> None:
+    """Read x-requests-remaining from response and abort run if below floor."""
+    try:
+        remaining = int(resp.headers.get('x-requests-remaining', '99999'))
+    except (AttributeError, TypeError, ValueError):
+        return
+    floor = max(QUOTA_FLOOR_GLOBAL, QUOTA_FLOOR_THIS_SPORT)
+    if remaining < floor:
+        print(f"🛑 QUOTA GUARD: {remaining} remaining < floor {floor} ({context}). Aborting run.")
+        sys.exit(0)
+
+
+def cached_odds_fetch(cache_key: str, fetch_fn):
+    """Return cached payload if fresh, else fetch and cache."""
+    path = os.path.join(CACHE_DIR, f"{SPORT_LABEL}_{cache_key}.json")
+    if os.path.exists(path) and (time.time() - os.path.getmtime(path)) < CACHE_TTL_SECONDS:
+        age = int(time.time() - os.path.getmtime(path))
+        with open(path) as f:
+            print(f"💾 Cache hit: {cache_key} (age {age}s)")
+            return json.load(f)
+    data = fetch_fn()
+    with open(path, 'w') as f:
+        json.dump(data, f)
+    return data
 
 SHEET_SCHEMAS = {
     'Tonights_Opponent': {
@@ -330,6 +376,7 @@ def fetch_odds_api_schedule_games(game_date):
             params={'apiKey': ODDS_API_KEY},
             timeout=30,
         )
+        check_quota_or_abort(resp, "NBA schedule events fallback")
         if resp.status_code != 200:
             print(f"   ⚠️ Odds API schedule fallback {resp.status_code}: {resp.text[:100]}")
             return None
@@ -925,11 +972,19 @@ except Exception as e:
 print("Fetching Live Vegas Odds...")
 df_odds = pd.DataFrame()
 try:
-    response = requests.get('https://api.the-odds-api.com/v4/sports/basketball_nba/odds',
-        params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'spreads,totals', 'oddsFormat': 'american', 'bookmakers': 'draftkings'})
-    if response.status_code == 200:
+    def _fetch_game_odds():
+        response = requests.get('https://api.the-odds-api.com/v4/sports/basketball_nba/odds',
+            params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'spreads,totals', 'oddsFormat': 'american', 'bookmakers': 'draftkings'})
+        check_quota_or_abort(response, "NBA game odds")
+        if response.status_code != 200:
+            print(f"❌ Odds API Error: {response.status_code} — {response.text[:200]}")
+            return []
+        return response.json()
+
+    odds_games = cached_odds_fetch("game_odds", _fetch_game_odds)
+    if odds_games:
         odds_list = []
-        for game in response.json():
+        for game in odds_games:
             if not game.get('bookmakers'):
                 print(f"⚠️ No DK line for: {game['away_team']} @ {game['home_team']}")
                 continue
@@ -965,8 +1020,6 @@ try:
         df_team_final = df_team_final.merge(
             df_odds[['TEAM_ABBREVIATION', 'IMPLIED_TOTAL', 'SPREAD', 'GAME_TOTAL']],
             on='TEAM_ABBREVIATION', how='left')
-    else:
-        print(f"❌ Odds API Error: {response.status_code} — {response.text[:200]}")
 except Exception as e:
     print(f"❌ Failed to fetch odds: {e}")
 
@@ -1344,6 +1397,7 @@ df_props = pd.DataFrame(columns=DK_PLAYER_PROPS_COLUMNS)
 df_all_books = pd.DataFrame(columns=ALL_BOOKS_PROPS_COLUMNS)
 try:
     ev_resp = requests.get(f'https://api.the-odds-api.com/v4/sports/{SPORT}/events', params={'apiKey': ODDS_API_KEY}, timeout=15)
+    check_quota_or_abort(ev_resp, "NBA events")
     if ev_resp.status_code != 200:
         print(f"❌ Failed to fetch events: {ev_resp.status_code} — {ev_resp.text[:200]}")
     else:
@@ -1359,6 +1413,9 @@ try:
             if e.get('home_team', '').lower() in active_team_names
             or e.get('away_team', '').lower() in active_team_names
         ]
+        if not tonight_ids:
+            print(f"⏭️  No {SPORT_LABEL} games scheduled — skipping props pull.")
+            sys.exit(0)
         print(f"🏟️ Found {len(tonight_ids)} events — fetching props from {len(SUPPORTED_BOOKMAKERS)} books...")
 
         all_book_rows = []
@@ -1378,6 +1435,7 @@ try:
                     },
                     timeout=15
                 )
+                check_quota_or_abort(pr, f"NBA event props {eid}")
                 last_resp = pr
                 if pr.status_code != 200:
                     if api_errors < 3:
