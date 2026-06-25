@@ -8,6 +8,7 @@ class RunLogger:
         'run_id', 'sport', 'kind', 'started_at', 'finished_at', 'duration_sec',
         'status', 'trigger', 'rows_written', 'picks_generated', 'picks_graded',
         'hits', 'misses', 'dnp_count', 'not_found_count', 'warnings', 'error', 'git_sha',
+        'ODDS_CREDITS_REMAINING',
     ]
 
     def __init__(self, gspread_client, sheet_id, sport, kind):
@@ -28,6 +29,7 @@ class RunLogger:
         self.misses = 0
         self.dnp_count = 0
         self.not_found_count = 0
+        self.odds_credits_remaining = ""
         self.error = ""
         self.status = "OK"
 
@@ -63,6 +65,7 @@ class RunLogger:
             "; ".join(self.warnings)[:500],
             self.error,
             os.environ.get('GITHUB_SHA', 'local')[:7],
+            self.odds_credits_remaining,
         ]
         try:
             sh = self.gc.open_by_key(self.sheet_id)
