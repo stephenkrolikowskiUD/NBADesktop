@@ -42,6 +42,63 @@ print("Authenticating with Google...")
 SHEET_NAME = 'NBA_Dashboard_Data'
 SHEET_ID = '12gBgVx_RCsIytjZHjfZWgLtG-R-zcPbYYE-CVFd4EDw'
 SNAPSHOT_DATE = "2026-05-04"
+SPORT_LABEL = "NBA"
+ENABLE_FANDUEL_FALLBACK = os.getenv("ENABLE_FANDUEL_FALLBACK", "false").lower() == "true"
+_last_odds_credits_remaining = None
+
+# --- Odds API quota guard ---
+QUOTA_FLOOR_GLOBAL = 2000
+QUOTA_FLOOR_THIS_SPORT = {
+    "MLB": 1000,
+    "NBA": 800,
+    "NHL": 600,
+    "WNBA": 500,
+    "WC": 600,
+}[SPORT_LABEL]
+CACHE_DIR = os.path.expanduser("~/.dfs_engines_cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
+CACHE_TTL_SECONDS = {
+    "MLB": 900,
+    "NBA": 900,
+    "NHL": 900,
+    "WNBA": 1800,
+    "WC": 1800,
+}[SPORT_LABEL]
+
+
+def check_quota_or_abort(resp, context: str) -> None:
+    """Read x-requests-remaining from response and abort run if below floor."""
+    global _last_odds_credits_remaining
+    try:
+        remaining = int(resp.headers.get('x-requests-remaining', '99999'))
+    except (AttributeError, TypeError, ValueError):
+        return
+    _last_odds_credits_remaining = remaining
+    try:
+        runlog.odds_credits_remaining = remaining
+    except Exception:
+        pass
+    floor = QUOTA_FLOOR_THIS_SPORT
+    if remaining < floor:
+        print(
+            f"🛑 QUOTA GUARD: {remaining} remaining < {SPORT_LABEL} floor {floor} "
+            f"({context}). Aborting run."
+        )
+        sys.exit(0)
+
+
+def cached_odds_fetch(cache_key: str, fetch_fn):
+    """Return cached payload if fresh, else fetch and cache."""
+    path = os.path.join(CACHE_DIR, f"{SPORT_LABEL}_{cache_key}.json")
+    if os.path.exists(path) and (time.time() - os.path.getmtime(path)) < CACHE_TTL_SECONDS:
+        age = int(time.time() - os.path.getmtime(path))
+        with open(path) as f:
+            print(f"💾 Cache hit: {cache_key} (age {age}s)")
+            return json.load(f)
+    data = fetch_fn()
+    with open(path, 'w') as f:
+        json.dump(data, f)
+    return data
 
 SHEET_SCHEMAS = {
     'Tonights_Opponent': {
@@ -330,6 +387,7 @@ def fetch_odds_api_schedule_games(game_date):
             params={'apiKey': ODDS_API_KEY},
             timeout=30,
         )
+        check_quota_or_abort(resp, "NBA schedule events fallback")
         if resp.status_code != 200:
             print(f"   ⚠️ Odds API schedule fallback {resp.status_code}: {resp.text[:100]}")
             return None
@@ -925,11 +983,19 @@ except Exception as e:
 print("Fetching Live Vegas Odds...")
 df_odds = pd.DataFrame()
 try:
-    response = requests.get('https://api.the-odds-api.com/v4/sports/basketball_nba/odds',
-        params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'spreads,totals', 'oddsFormat': 'american', 'bookmakers': 'draftkings'})
-    if response.status_code == 200:
+    def _fetch_game_odds():
+        response = requests.get('https://api.the-odds-api.com/v4/sports/basketball_nba/odds',
+            params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'spreads,totals', 'oddsFormat': 'american', 'bookmakers': 'draftkings'})
+        check_quota_or_abort(response, "NBA game odds")
+        if response.status_code != 200:
+            print(f"❌ Odds API Error: {response.status_code} — {response.text[:200]}")
+            return []
+        return response.json()
+
+    odds_games = cached_odds_fetch("game_odds", _fetch_game_odds)
+    if odds_games:
         odds_list = []
-        for game in response.json():
+        for game in odds_games:
             if not game.get('bookmakers'):
                 print(f"⚠️ No DK line for: {game['away_team']} @ {game['home_team']}")
                 continue
@@ -965,8 +1031,6 @@ try:
         df_team_final = df_team_final.merge(
             df_odds[['TEAM_ABBREVIATION', 'IMPLIED_TOTAL', 'SPREAD', 'GAME_TOTAL']],
             on='TEAM_ABBREVIATION', how='left')
-    else:
-        print(f"❌ Odds API Error: {response.status_code} — {response.text[:200]}")
 except Exception as e:
     print(f"❌ Failed to fetch odds: {e}")
 
@@ -1094,6 +1158,9 @@ THIN_MARKET_THRESHOLD = 5
 # Caesars was dropped on 2026-05-27 — returned 0/0 best-book wins in production verification.
 # May be worth re-adding after 6/1 reset to re-test (could have been a one-day API issue).
 SUPPORTED_BOOKMAKERS = ['draftkings', 'fanduel', 'betmgm', 'espnbet']
+ACTIVE_PROP_BOOKMAKERS = SUPPORTED_BOOKMAKERS if ENABLE_FANDUEL_FALLBACK else [
+    b for b in SUPPORTED_BOOKMAKERS if b != FALLBACK_BOOKMAKER
+]
 REFERENCE_BOOKMAKER = 'draftkings'
 BEST_BOOK_TIE_BREAK = 'alpha'
 
@@ -1205,7 +1272,7 @@ def finalize_all_books_frame(rows, timestamp_value, name_fixes=None):
     if not rows:
         return pd.DataFrame(columns=ALL_BOOKS_PROPS_COLUMNS)
     df = pd.DataFrame(rows)
-    df = df[df['BOOK'].isin(SUPPORTED_BOOKMAKERS)].copy()
+    df = df[df['BOOK'].isin(ACTIVE_PROP_BOOKMAKERS)].copy()
     df = apply_multi_book_name_fixes(df, name_fixes or {})
     df['LINE'] = pd.to_numeric(df['LINE'], errors='coerce')
     df['OVER_ODDS'] = pd.to_numeric(df['OVER_ODDS'], errors='coerce')
@@ -1315,7 +1382,9 @@ def print_best_book_summary(df_props, df_all_books):
     print("\n" + "=" * 60)
     print("BEST-BOOK ROUTING SUMMARY")
     print("=" * 60)
-    print(f"   Books queried:    {', '.join(SUPPORTED_BOOKMAKERS)}")
+    print(f"   Books queried:    {', '.join(ACTIVE_PROP_BOOKMAKERS)}")
+    if not ENABLE_FANDUEL_FALLBACK:
+        print("   ⏭️  FanDuel fallback DISABLED (ENABLE_FANDUEL_FALLBACK=false) — FanDuel skipped")
     if df_all_books is None or df_all_books.empty or df_props is None or df_props.empty:
         print("   Props covered:    0 unique (player, metric) pairs")
         print("=" * 60)
@@ -1326,7 +1395,7 @@ def print_best_book_summary(df_props, df_all_books):
     print(f"   Props covered:    {covered} unique (player, metric) pairs")
     print(f"   DK reference:     {dk_ref} / {covered} ({dk_pct:.1f}%)")
     print("   Best-book wins by:")
-    for book in SUPPORTED_BOOKMAKERS:
+    for book in ACTIVE_PROP_BOOKMAKERS:
         over_ct = int((df_props.get('BEST_OVER_BOOK') == book).sum()) if 'BEST_OVER_BOOK' in df_props.columns else 0
         under_ct = int((df_props.get('BEST_UNDER_BOOK') == book).sum()) if 'BEST_UNDER_BOOK' in df_props.columns else 0
         print(f"      {book:<12} {over_ct:>4} OVER  / {under_ct:>4} UNDER")
@@ -1344,6 +1413,7 @@ df_props = pd.DataFrame(columns=DK_PLAYER_PROPS_COLUMNS)
 df_all_books = pd.DataFrame(columns=ALL_BOOKS_PROPS_COLUMNS)
 try:
     ev_resp = requests.get(f'https://api.the-odds-api.com/v4/sports/{SPORT}/events', params={'apiKey': ODDS_API_KEY}, timeout=15)
+    check_quota_or_abort(ev_resp, "NBA events")
     if ev_resp.status_code != 200:
         print(f"❌ Failed to fetch events: {ev_resp.status_code} — {ev_resp.text[:200]}")
     else:
@@ -1359,7 +1429,10 @@ try:
             if e.get('home_team', '').lower() in active_team_names
             or e.get('away_team', '').lower() in active_team_names
         ]
-        print(f"🏟️ Found {len(tonight_ids)} events — fetching props from {len(SUPPORTED_BOOKMAKERS)} books...")
+        if not tonight_ids:
+            print(f"⏭️  No {SPORT_LABEL} games scheduled — skipping props pull.")
+            sys.exit(0)
+        print(f"🏟️ Found {len(tonight_ids)} events — fetching props from {len(ACTIVE_PROP_BOOKMAKERS)} books...")
 
         all_book_rows = []
         api_errors = 0
@@ -1373,11 +1446,12 @@ try:
                         'apiKey': ODDS_API_KEY,
                         'regions': 'us',
                         'markets': markets_param,
-                        'bookmakers': ','.join(SUPPORTED_BOOKMAKERS),
+                        'bookmakers': ','.join(ACTIVE_PROP_BOOKMAKERS),
                         'oddsFormat': 'american'
                     },
                     timeout=15
                 )
+                check_quota_or_abort(pr, f"NBA event props {eid}")
                 last_resp = pr
                 if pr.status_code != 200:
                     if api_errors < 3:
@@ -1389,7 +1463,7 @@ try:
                 data = pr.json()
                 for bk in data.get('bookmakers', []):
                     book_key = bk.get('key', '')
-                    if book_key not in SUPPORTED_BOOKMAKERS:
+                    if book_key not in ACTIVE_PROP_BOOKMAKERS:
                         continue
                     for mkt in bk.get('markets', []):
                         mn = market_mapping.get(mkt.get('key'))
@@ -1403,7 +1477,7 @@ try:
             print(f"   📊 API quota remaining: {last_resp.headers.get('x-requests-remaining', '?')}")
         if api_errors:
             print(f"   ⚠️ Total props API errors: {api_errors}")
-        for book in SUPPORTED_BOOKMAKERS:
+        for book in ACTIVE_PROP_BOOKMAKERS:
             book_ct = 0 if df_all_books.empty else int((df_all_books['BOOK'] == book).sum())
             if book_ct == 0:
                 print(f"   {book}: 0 props")
