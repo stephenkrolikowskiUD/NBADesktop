@@ -74,6 +74,11 @@ class RunLogger:
             except Exception:
                 ws = sh.add_worksheet(title='Run_Log', rows=1000, cols=len(self.HEADERS))
                 ws.append_row(self.HEADERS)
+            else:
+                existing_headers = ws.row_values(1)
+                missing_headers = [h for h in self.HEADERS if h not in existing_headers]
+                if missing_headers:
+                    ws.update('A1', [existing_headers + missing_headers])
             ws.append_row(row, value_input_option='RAW')
             print(f"📝 Run_Log: {self.status} ({duration}s) — {self.run_id}")
         except Exception as e:
