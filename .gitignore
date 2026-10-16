@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+nba_backups/
+nba_data/

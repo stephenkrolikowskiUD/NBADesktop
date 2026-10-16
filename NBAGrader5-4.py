@@ -14,30 +14,10 @@ import subprocess
 import gspread
 from google.auth import default
 from google.oauth2.service_account import Credentials
-try:
-    from nba_api.stats.endpoints import leaguegamelog
-except ImportError:
-    print("📦 Installing missing nba_api package...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "nba_api"])
-    from nba_api.stats.endpoints import leaguegamelog
-try:
-    from run_logger import RunLogger
-except ImportError:
-    class RunLogger:
-        def __init__(self, *args, **kwargs):
-            self.hits = 0
-            self.misses = 0
-            self.dnp_count = 0
-            self.not_found_count = 0
-            self.picks_graded = 0
-        def record_write(self, *args, **kwargs):
-            pass
-        def warn(self, *args, **kwargs):
-            pass
-        def fail(self, *args, **kwargs):
-            pass
-        def finalize_and_write(self):
-            pass
+from nba_api.stats.endpoints import leaguegamelog
+from run_logger import RunLogger
+import nba_sources
+from nba_readiness import box_metrics, backup_values
 
 def get_gspread_client():
     scopes = [
@@ -191,7 +171,9 @@ def find_box_score(box_lookup, player, date):
     return None
 
 def grade_pick(actual, line_val, lean):
-    if actual is None or line_val is None:
+    actual, line_val = safe_float(actual), safe_float(line_val)
+    lean = str(lean or '').strip().upper()
+    if actual is None or line_val is None or lean not in {'OVER', 'UNDER', 'FADE'}:
         return '', ''
     if actual == line_val:
         return 'PUSH', 'PUSH'
@@ -558,7 +540,9 @@ today_ts = pd.to_datetime(today_str)
 retry_cutoff = today_ts - pd.Timedelta(days=RETRY_DNP_LOOKBACK_DAYS)
 retry_dnp_mask = (hit_series == 'DNP') & date_series.notna() & (date_series >= retry_cutoff) & (date_series <= today_ts)
 blank_ungraded_mask = (hit_series == '') & date_series.notna() & (date_series < today_ts)
-ungraded = df_picks[blank_ungraded_mask | retry_dnp_mask].copy()
+correction_cutoff = today_ts - pd.Timedelta(days=3)
+correction_mask = hit_series.isin(['YES','NO','PUSH']) & date_series.notna() & (date_series >= correction_cutoff) & (date_series < today_ts)
+ungraded = df_picks[blank_ungraded_mask | retry_dnp_mask | correction_mask].copy()
 
 if ungraded.empty:
     blanks_today = int(((hit_series == '') & date_series.notna() & (date_series >= today_ts)).sum())
@@ -575,115 +559,20 @@ else:
     else:
         print(f"🎯 {len(ungraded)} gradeable picks from: {', '.join(dates_to_grade)}")
 
-if not dates_to_grade:
-    print("\n⏭️ No gradeable NBA pick dates — skipping box score fetch.")
-    raise SystemExit(0)
-
-# --- 4. FETCH BOX SCORES ---
-print("\nFetching box score data...")
+# --- 4. FETCH VERIFIED FINAL BOX SCORES ---
+print("\nFetching complete final box scores by pick date...")
 box_lookup = {}
 box_date_set = set()
-try:
-    print("   📊 Loading from Player_Stats sheet...")
-    ws_logs = sh.worksheet('Player_Stats')
-    log_rows = ws_logs.get_all_records()
-    df_logs = pd.DataFrame(log_rows)
-    if len(df_logs) > 0 and {'PLAYER_NAME', 'GAME_DATE'}.issubset(df_logs.columns):
-        df_logs['GAME_DATE'] = df_logs['GAME_DATE'].map(normalize_pick_date)
-        for _, row in df_logs.iterrows():
-            key = (row['PLAYER_NAME'], row['GAME_DATE'])
-            box_lookup[key] = {
-                'PTS': safe_float(row.get('PTS'), 0),
-                'REB': safe_float(row.get('REB'), 0),
-                'AST': safe_float(row.get('AST'), 0),
-                'PRA': safe_float(row.get('PRA'), 0),
-                'PR': safe_float(row.get('PR'), 0),
-                'PA': safe_float(row.get('PA'), 0),
-                'RA': safe_float(row.get('RA'), 0),
-                'FG3M': safe_float(row.get('FG3M'), 0),
-                'BLK': safe_float(row.get('BLK'), 0),
-                'STL': safe_float(row.get('STL'), 0),
-                'STOCKS': safe_float(row.get('STOCKS'), 0),
-                'DK_FP': round(safe_float(row.get('DK_FP'), 0), 1),
-                'UD_FP': round(safe_float(row.get('UD_FP'), 0), 1),
-                'MIN': safe_float(row.get('MIN'), 0),
-            }
-        box_date_set = set(df_logs['GAME_DATE'].astype(str).tolist())
-        print(f"   ✅ Loaded {len(box_lookup)} player game entries from sheet")
-except Exception as e:
-    print(f"   ⚠️ Could not load Player_Stats sheet: {e}")
-
-grade_dates_missing = [d for d in dates_to_grade if d not in box_date_set]
-if (grade_dates_missing or not box_lookup) and os.environ.get('GITHUB_ACTIONS') == 'true':
-    print(f"   ⚠️ Missing seeded Player_Stats dates: {', '.join(grade_dates_missing) if grade_dates_missing else 'all grade dates'}")
-    print("   ⏭️ GitHub Actions mode — skipping stats.nba.com fallback; unavailable picks stay ungraded for retry.")
-elif grade_dates_missing or not box_lookup:
-    print("   🔄 Falling back to NBA API for missing dates...")
-    season = current_nba_season()
-    print(f"   Using NBA season: {season}")
-    df_logs = pd.DataFrame()
-    for season_type in ['Regular Season', 'Playoffs', 'PlayIn']:
-        try:
-            df_tmp = fetch_nba_gamelog_df(season, season_type)
-            if len(df_tmp) > 0:
-                df_logs = pd.concat([df_logs, df_tmp], ignore_index=True)
-        except Exception as e:
-            print(f"   ❌ {season_type} fetch failed after retries: {e}")
-    if not df_logs.empty:
-        df_logs['GAME_DATE'] = df_logs['GAME_DATE'].map(normalize_pick_date)
-        df_logs['PRA'] = pd.to_numeric(df_logs['PTS']) + pd.to_numeric(df_logs['REB']) + pd.to_numeric(df_logs['AST'])
-        df_logs['PR'] = pd.to_numeric(df_logs['PTS']) + pd.to_numeric(df_logs['REB'])
-        df_logs['PA'] = pd.to_numeric(df_logs['PTS']) + pd.to_numeric(df_logs['AST'])
-        df_logs['RA'] = pd.to_numeric(df_logs['REB']) + pd.to_numeric(df_logs['AST'])
-        df_logs['STOCKS'] = pd.to_numeric(df_logs['STL']) + pd.to_numeric(df_logs['BLK'])
-        df_logs['DD'] = (
-            (pd.to_numeric(df_logs['PTS']) >= 10).astype(int) +
-            (pd.to_numeric(df_logs['REB']) >= 10).astype(int) +
-            (pd.to_numeric(df_logs['AST']) >= 10).astype(int) +
-            (pd.to_numeric(df_logs['STL']) >= 10).astype(int) +
-            (pd.to_numeric(df_logs['BLK']) >= 10).astype(int)
-            >= 2
-        ).astype(int)
-        df_logs['DK_FP'] = (
-            pd.to_numeric(df_logs['PTS']) +
-            pd.to_numeric(df_logs['FG3M']) * 0.5 +
-            pd.to_numeric(df_logs['REB']) * 1.25 +
-            pd.to_numeric(df_logs['AST']) * 1.5 +
-            pd.to_numeric(df_logs['STL']) * 2 +
-            pd.to_numeric(df_logs['BLK']) * 2 -
-            pd.to_numeric(df_logs['TOV']) * 0.5 +
-            df_logs['DD'] * 1.5
-        )
-        df_logs['UD_FP'] = (
-            pd.to_numeric(df_logs['PTS']) +
-            pd.to_numeric(df_logs['REB']) * 1.2 +
-            pd.to_numeric(df_logs['AST']) * 1.5 +
-            pd.to_numeric(df_logs['STL']) * 3 +
-            pd.to_numeric(df_logs['BLK']) * 3 -
-            pd.to_numeric(df_logs['TOV'])
-        )
-        for _, row in df_logs.iterrows():
-            key = (row['PLAYER_NAME'], row['GAME_DATE'])
-            if key in box_lookup:
-                continue
-            box_lookup[key] = {
-                'PTS': safe_float(row['PTS'], 0),
-                'REB': safe_float(row['REB'], 0),
-                'AST': safe_float(row['AST'], 0),
-                'PRA': safe_float(row['PRA'], 0),
-                'PR': safe_float(row['PR'], 0),
-                'PA': safe_float(row['PA'], 0),
-                'RA': safe_float(row['RA'], 0),
-                'FG3M': safe_float(row['FG3M'], 0),
-                'BLK': safe_float(row['BLK'], 0),
-                'STL': safe_float(row['STL'], 0),
-                'STOCKS': safe_float(row['STOCKS'], 0),
-                'DK_FP': round(safe_float(row['DK_FP'], 0), 1),
-                'UD_FP': round(safe_float(row.get('UD_FP'), 0), 1),
-                'MIN': safe_float(row['MIN'], 0),
-            }
-        box_date_set.update(df_logs['GAME_DATE'].astype(str).tolist())
-        print(f"   ✅ Total box score entries available: {len(box_lookup)}")
+for date_to_grade in dates_to_grade:
+    try:
+        final_rows = nba_sources.final_boxes(date_to_grade)
+        for final_row in final_rows:
+            box_lookup[(final_row['PLAYER_NAME'], date_to_grade)] = box_metrics(final_row)
+        if final_rows:
+            box_date_set.add(date_to_grade)
+    except Exception as e:
+        runlog.warn(f'Final boxes unavailable for {date_to_grade}: {type(e).__name__}')
+        print(f"   ⏳ {date_to_grade}: final boxes unavailable; leaving pending")
 
 # --- 5. GRADE EACH PICK ---
 print("\n" + "=" * 60)
@@ -745,6 +634,14 @@ for idx, pick in ungraded.iterrows():
         print(f"   ⬜ {player} ({date}) — DNP / No box score")
         continue
 
+    if box.get('DNP') is True:
+        updates.extend([{'range': f'{col_letter(actual_col)}{sheet_row}', 'value': 'DNP'},
+                        {'range': f'{col_letter(hit_col)}{sheet_row}', 'value': 'DNP'}])
+        if result_col is not None:
+            updates.append({'range': f'{col_letter(result_col)}{sheet_row}', 'value': 'DNP'})
+        dnp += 1
+        continue
+
     actual = box.get(prop_type)
     if actual is None:
         not_found += 1
@@ -774,6 +671,7 @@ for idx, pick in ungraded.iterrows():
 if updates:
     print(f"\n📤 Writing {len(updates)} cell updates to Google Sheets...")
     cells = [{'range': u['range'], 'values': [[u['value']]]} for u in updates]
+    backup_values(ws.get_all_values(), 'Daily_Picks-before-grading')
     ws.batch_update(cells)
     print("✅ Sheet updated!")
 else:

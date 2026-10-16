@@ -8,39 +8,24 @@ import re
 import os
 import atexit
 import sys
-import subprocess
+import unicodedata
+import uuid
 from datetime import datetime
 import pytz
 import gspread
 from google.auth import default
 from google.oauth2.service_account import Credentials
-try:
-    from nba_api.stats.endpoints import leaguegamelog, leaguedashteamstats, scoreboardv3
-    from nba_api.stats.static import teams
-except ImportError:
-    print("📦 Installing missing nba_api package...")
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "nba_api"])
-    from nba_api.stats.endpoints import leaguegamelog, leaguedashteamstats, scoreboardv3
-    from nba_api.stats.static import teams
-try:
-    from run_logger import RunLogger
-except ImportError:
-    class RunLogger:
-        def __init__(self, *args, **kwargs):
-            self.picks_generated = 0
-        def record_write(self, *args, **kwargs):
-            pass
-        def warn(self, *args, **kwargs):
-            pass
-        def fail(self, *args, **kwargs):
-            pass
-        def finalize_and_write(self):
-            pass
+from nba_api.stats.endpoints import leaguegamelog, leaguedashteamstats, scoreboardv3, commonallplayers
+from nba_api.stats.static import teams
+from run_logger import RunLogger
+import nba_sources
+import nba_injuries
+from nba_readiness import season_for_date, event_is_on_date, validate_market_picks, replace_sheet_values, select_analysis_history, finite_odds_probability, non_push_rate, selection_key
 
 # --- 1. AUTHENTICATION & SETUP ---
 print("Authenticating with Google...")
 SHEET_NAME = 'NBA_Dashboard_Data'
-SHEET_ID = '12gBgVx_RCsIytjZHjfZWgLtG-R-zcPbYYE-CVFd4EDw'
+SHEET_ID = os.environ.get('NBA_SHEET_ID', '12gBgVx_RCsIytjZHjfZWgLtG-R-zcPbYYE-CVFd4EDw')
 SNAPSHOT_DATE = "2026-05-04"
 SPORT_LABEL = "NBA"
 ENABLE_FANDUEL_FALLBACK = os.getenv("ENABLE_FANDUEL_FALLBACK", "false").lower() == "true"
@@ -55,7 +40,7 @@ QUOTA_FLOOR_THIS_SPORT = {
     "WNBA": 500,
     "WC": 600,
 }[SPORT_LABEL]
-CACHE_DIR = os.path.expanduser("~/.dfs_engines_cache")
+CACHE_DIR = os.environ.get('NBA_CACHE_DIR', os.path.expanduser("~/.dfs_engines_cache"))
 os.makedirs(CACHE_DIR, exist_ok=True)
 CACHE_TTL_SECONDS = {
     "MLB": 900,
@@ -99,6 +84,8 @@ def cached_odds_fetch(cache_key: str, fetch_fn):
     with open(path, 'w') as f:
         json.dump(data, f)
     return data
+RUN_ID = uuid.uuid4().hex
+PUBLICATION_WARNINGS = []
 
 SHEET_SCHEMAS = {
     'Tonights_Opponent': {
@@ -134,6 +121,9 @@ def get_gspread_client():
         "https://www.googleapis.com/auth/spreadsheets",
         "https://www.googleapis.com/auth/drive",
     ]
+    service_file = os.environ.get("GOOGLE_SERVICE_ACCOUNT_FILE")
+    if service_file:
+        return gspread.authorize(Credentials.from_service_account_file(service_file, scopes=scopes))
     svc_json = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON") or os.environ.get("GSPREAD_SERVICE_ACCOUNT_JSON")
     if svc_json:
         creds = Credentials.from_service_account_info(json.loads(svc_json), scopes=scopes)
@@ -163,6 +153,8 @@ def load_secret(name, prompt_text=None, allow_missing=False):
         pass
     if allow_missing:
         return None
+    if not sys.stdin.isatty():
+        raise RuntimeError(f"Missing required secret: {name}")
     import getpass
     return getpass.getpass(prompt_text or f"Paste your {name}: ")
 
@@ -173,7 +165,7 @@ try:
     runlog = RunLogger(gc, SHEET_ID, sport='NBA', kind='engine')
     atexit.register(runlog.finalize_and_write)
 except Exception as e:
-    print(f"❌ Error: Could not find Google Sheet with ID '{SHEET_ID}'.")
+    raise RuntimeError("Could not open NBA spreadsheet") from e
 
 ODDS_API_KEY = load_secret('ODDS_API_KEY', '🔑 Paste your Odds API Key: ')
 GEMINI_API_KEY = load_secret('GEMINI_API_KEY', allow_missing=True)
@@ -251,12 +243,11 @@ def clean_name(val):
     return str(val or "").strip()
 
 def normalizePlayerName(name):
-    return clean_name(name)\
-        .lower()\
-        .replace("’", "")\
-        .replace("'", "")\
-        .replace(".", "")\
-        .replace("`", "")
+    name = unicodedata.normalize('NFKD', clean_name(name))
+    name = ''.join(c for c in name if not unicodedata.combining(c))
+    name = re.sub(r"['’`.]+", '', name.lower())
+    name = re.sub(r'\b(jr|sr|ii|iii|iv)\b', '', name)
+    return re.sub(r'[^a-z0-9]+', ' ', name).strip()
 
 def normalize_pick_date(val):
     s = str(val or "").strip()
@@ -283,7 +274,7 @@ def fetch_league_gamelog_df(season, season_type, max_attempts=3):
                 league_id='00',
                 season=season,
                 season_type_all_star=season_type,
-                timeout=90,
+                timeout=20,
             )
             df = resp.get_data_frames()[0]
             print(f"   ✅ {season_type}: {len(df)} rows")
@@ -387,7 +378,6 @@ def fetch_odds_api_schedule_games(game_date):
             params={'apiKey': ODDS_API_KEY},
             timeout=30,
         )
-        check_quota_or_abort(resp, "NBA schedule events fallback")
         if resp.status_code != 200:
             print(f"   ⚠️ Odds API schedule fallback {resp.status_code}: {resp.text[:100]}")
             return None
@@ -402,7 +392,7 @@ def fetch_odds_api_schedule_games(game_date):
                 commence_ts = datetime.fromisoformat(commence_raw.replace('Z', '+00:00'))
                 commence_date_est = commence_ts.astimezone(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d')
             except Exception:
-                commence_date_est = commence_raw[:10]
+                continue
             if commence_date_est != game_date:
                 continue
             home = full_to_abbr.get(game.get('home_team'))
@@ -411,6 +401,7 @@ def fetch_odds_api_schedule_games(game_date):
                 normalized_games.append({
                     'homeTeam': {'teamTricode': home},
                     'awayTeam': {'teamTricode': away},
+                    'gameTimeUTC': commence_raw,
                 })
         print(f"   ✅ Fallback schedule fetch: {len(normalized_games)} games from Odds API events")
         return normalized_games
@@ -419,6 +410,10 @@ def fetch_odds_api_schedule_games(game_date):
         return None
 
 def fetch_scoreboard_games(game_date, max_attempts=3):
+    try:
+        return nba_sources.schedule(game_date), 'ESPN'
+    except Exception:
+        print('   ⚠️ ESPN schedule unavailable; trying NBA and Odds API sources')
     if os.environ.get('GITHUB_ACTIONS', '').lower() == 'true':
         print("   ⚠️ GitHub Actions mode — using Odds API as primary NBA schedule source")
         odds_games = fetch_odds_api_schedule_games(game_date)
@@ -666,6 +661,7 @@ def refresh_clv_daily_picks(sheet, target_date, props_df, timestamp_label):
         key = (
             normalizePlayerName(prop.get('PLAYER_NAME', '')),
             str(prop.get('METRIC', '')).strip().upper(),
+            str(prop.get('BOOK') or 'draftkings'), str(prop.get('EVENT_ID') or ''),
         )
         line_map[key] = latest_line
     for r in rows[1:]:
@@ -673,9 +669,18 @@ def refresh_clv_daily_picks(sheet, target_date, props_df, timestamp_label):
             r.append('')
         if normalize_pick_date(r[col_idx['DATE']]) != target_date:
             continue
+        if not all(k in col_idx for k in ['BOOK','EVENT_ID','COMMENCE_TIME']):
+            continue
+        try:
+            start = datetime.fromisoformat(str(r[col_idx['COMMENCE_TIME']]).replace('Z','+00:00'))
+            if start.tzinfo is None or datetime.now(pytz.UTC) >= start:
+                continue
+        except ValueError:
+            continue
         key = (
             normalizePlayerName(r[col_idx.get('player', 0)]),
             str(r[col_idx.get('prop_type', 0)]).strip().upper(),
+            str(r[col_idx['BOOK']] or 'draftkings'), str(r[col_idx['EVENT_ID']]),
         )
         if key not in line_map:
             continue
@@ -686,7 +691,8 @@ def refresh_clv_daily_picks(sheet, target_date, props_df, timestamp_label):
         except (TypeError, ValueError):
             open_line = None
         new_latest = f"{latest_line:g}"
-        new_delta = f"{(latest_line - open_line):+.1f}" if open_line is not None else ''
+        direction = -1 if str(r[col_idx.get('lean',0)]).upper() in {'UNDER','FADE'} else 1
+        new_delta = f"{(latest_line - open_line)*direction:+.1f}" if open_line is not None else ''
         if r[col_idx['CLV_LATEST_LINE']] != new_latest:
             r[col_idx['CLV_LATEST_LINE']] = new_latest
             changed = True
@@ -700,8 +706,7 @@ def refresh_clv_daily_picks(sheet, target_date, props_df, timestamp_label):
             r[col_idx['CLV_OPEN_LINE']] = f"{open_line:g}"
             changed = True
     if changed:
-        ws.clear()
-        ws.update(rows, value_input_option='RAW')
+        replace_sheet_values(ws, rows)
         print("🔁 CLV latest-line tracker refreshed for today's existing picks.")
 
 def build_sample_flag_frame(log_df, ref_date=None):
@@ -745,48 +750,18 @@ PLAYER_LOG_NUMERIC_COLS = ['PLAYER_ID', 'MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK'
 existing_player_logs = load_existing_player_logs('Player_Stats', PLAYER_LOG_BASE_COLS, PLAYER_LOG_NUMERIC_COLS)
 is_github_actions = os.environ.get('GITHUB_ACTIONS', '').lower() == 'true'
 df_log_parts = []
-if is_github_actions and len(existing_player_logs) > 0:
-    print("   ⚠️ GitHub Actions mode — using seeded Player_Stats and checking missing pick dates")
-    backfill_today = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d')
-    existing_dates = set(existing_player_logs['GAME_DATE'].map(normalize_game_date).astype(str))
-    missing_dates = find_missing_player_stat_dates(sh, existing_dates, backfill_today)
-    for missing_date in missing_dates[:3]:
-        print(f"   🔎 Backfilling missing Player_Stats date: {missing_date}")
-        date_parts = []
-        for season_type in ['Regular Season', 'Playoffs', 'PlayIn']:
-            try:
-                df_tmp = fetch_league_gamelog_for_date(NBA_SEASON, season_type, missing_date)
-                if len(df_tmp) > 0:
-                    date_parts.append(df_tmp)
-            except Exception as e:
-                print(f"   ⚠️ Could not backfill {missing_date} {season_type}: {e}")
-        if date_parts:
-            df_log_parts.extend(date_parts)
-            continue
-        try:
-            df_tmp = fetch_live_boxscore_logs_for_date(missing_date)
-            if len(df_tmp) > 0:
-                df_log_parts.append(df_tmp)
-        except Exception as e:
-            print(f"   ⚠️ Could not backfill {missing_date} from NBA CDN boxscores: {e}")
-    if df_log_parts:
-        df_logs_api = pd.concat([existing_player_logs[PLAYER_LOG_BASE_COLS]] + df_log_parts, ignore_index=True)
-    else:
-        df_logs_api = existing_player_logs[PLAYER_LOG_BASE_COLS].copy()
+for season_type in ['Regular Season', 'PlayIn', 'Playoffs']:
+    try:
+        df_log_parts.append(fetch_league_gamelog_df(NBA_SEASON, season_type))
+    except Exception as e:
+        runlog.warn(f'{season_type} game logs unavailable')
+if not df_log_parts:
+    if existing_player_logs.empty:
+        raise RuntimeError('Fresh NBA logs unavailable and no historical seed is configured.')
+    df_logs_api = nba_sources.refresh_seed(existing_player_logs, datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d'), NBA_SEASON)
+    PUBLICATION_WARNINGS.append('NBA Stats unavailable; game logs refreshed through ESPN final boxes')
 else:
-    for season_type in ['Regular Season', 'PlayIn', 'Playoffs']:
-        try:
-            df_log_parts.append(fetch_league_gamelog_df(NBA_SEASON, season_type))
-        except Exception as e:
-            print(f"   ❌ {season_type} fetch failed after retries: {e}")
-    if not df_log_parts:
-        if len(existing_player_logs) > 0:
-            print("   ⚠️ NBA API unavailable — using seeded Player_Stats only")
-            df_logs_api = existing_player_logs[PLAYER_LOG_BASE_COLS].copy()
-        else:
-            raise RuntimeError("NBA API unavailable and no seeded Player_Stats exist to fall back on.")
-    else:
-        df_logs_api = pd.concat(df_log_parts, ignore_index=True)
+    df_logs_api = pd.concat(df_log_parts, ignore_index=True)
 if 'GAME_OPP' not in df_logs_api.columns:
     df_logs_api['GAME_OPP'] = df_logs_api['MATCHUP'].astype(str).str[-3:]
 
@@ -821,7 +796,7 @@ for _, row in df_logs_api.iterrows():
     cutoff = latest_date_by_pid.get(pid)
     if not cutoff:
         cutoff = latest_date_by_name.get(name)
-    keep_mask.append(not cutoff or game_date > cutoff)
+    keep_mask.append(True)
 new_player_logs = df_logs_api.loc[keep_mask, PLAYER_LOG_BASE_COLS].copy()
 combined_logs = pd.concat([existing_player_logs[PLAYER_LOG_BASE_COLS], new_player_logs], ignore_index=True)
 combined_logs = combined_logs.drop_duplicates(subset=['PLAYER_ID', 'PLAYER_NAME', 'GAME_DATE', 'MATCHUP', 'TEAM_ABBREVIATION'], keep='last')
@@ -831,6 +806,7 @@ df_logs = combined_logs.copy()
 # --- 3. CLEANING & FORMATTING ---
 print("Cleaning Data Types...")
 df_logs['GAME_DATE'] = pd.to_datetime(df_logs['GAME_DATE'])
+df_logs['SEASON'] = df_logs['GAME_DATE'].dt.strftime('%Y-%m-%d').map(season_for_date)
 df_logs['GAME_OPP'] = df_logs['MATCHUP'].str[-3:]
 for col in ['MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'FG3M', 'FG3A', 'FGA', 'FTA', 'FGM']:
     df_logs[col] = pd.to_numeric(df_logs[col])
@@ -851,10 +827,11 @@ df_logs['DD'] = (
     (df_logs['STL'] >= 10).astype(int) +
     (df_logs['BLK'] >= 10).astype(int) >= 2
 ).astype(int)
+df_logs['TD'] = ((df_logs[['PTS', 'REB', 'AST', 'STL', 'BLK']] >= 10).sum(axis=1) >= 3).astype(int)
 df_logs['DK_FP'] = (
     df_logs['PTS'] + (df_logs['FG3M'] * 0.5) + (df_logs['REB'] * 1.25) +
     (df_logs['AST'] * 1.5) + (df_logs['STL'] * 2) + (df_logs['BLK'] * 2) -
-    (df_logs['TOV'] * 0.5) + (df_logs['DD'] * 1.5)
+    (df_logs['TOV'] * 0.5) + (df_logs['DD'] * 1.5) + (df_logs['TD'] * 3)
 )
 df_logs['UD_FP'] = (
     df_logs['PTS'] + (df_logs['REB'] * 1.2) + (df_logs['AST'] * 1.5) +
@@ -866,13 +843,15 @@ df_logs['USAGE_PPM'] = np.where(df_logs['MIN'] > 0, (df_logs['FGA'] + (0.44 * df
 
 metrics = ['MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TOV', 'FG3M', 'FG3A', 'PRA', 'PR', 'PA', 'RA', 'STOCKS', 'DD', 'DK_FP', 'UD_FP', 'FPPM', 'UD_FPPM', 'USAGE_PPM']
 windows = [3, 5, 10]
-grouped = df_logs.groupby('PLAYER_ID')
+grouped = df_logs.groupby(['PLAYER_ID', 'SEASON'])
+rolling_columns = {}
 for m in metrics:
-    df_logs[f'Seas_{m}'] = grouped[m].transform(lambda x: x.expanding().mean()).round(2)
+    rolling_columns[f'Seas_{m}'] = grouped[m].transform(lambda x: x.expanding().mean()).round(2)
     for w in windows:
-        df_logs[f'L{w}_{m}'] = grouped[m].transform(lambda x: x.rolling(window=w, min_periods=1).mean()).round(2)
+        rolling_columns[f'L{w}_{m}'] = grouped[m].transform(lambda x: x.rolling(window=w, min_periods=1).mean()).round(2)
+df_logs = pd.concat([df_logs, pd.DataFrame(rolling_columns, index=df_logs.index)], axis=1)
 
-df_sample_flags = build_sample_flag_frame(df_logs)
+df_sample_flags = build_sample_flag_frame(df_logs[df_logs['SEASON'] == NBA_SEASON])
 if not df_sample_flags.empty:
     df_logs = df_logs.merge(df_sample_flags, on=['PLAYER_ID', 'PLAYER_NAME'], how='left')
     df_logs['LIMITED_SAMPLE'] = df_logs['LIMITED_SAMPLE'].fillna(False)
@@ -886,7 +865,7 @@ else:
     df_logs['LIMITED_SAMPLE'] = False
     df_logs['RETURNING'] = False
 
-final_columns = ['PLAYER_ID', 'PLAYER_NAME', 'TEAM_ABBREVIATION', 'GAME_DATE', 'MATCHUP', 'GAME_OPP', 'WL', 'FGA', 'FTA', 'FGM']
+final_columns = ['SEASON', 'PLAYER_ID', 'PLAYER_NAME', 'TEAM_ABBREVIATION', 'GAME_DATE', 'MATCHUP', 'GAME_OPP', 'WL', 'FGA', 'FTA', 'FGM']
 for m in metrics:
     final_columns.append(m)
     final_columns.append(f'Seas_{m}')
@@ -909,10 +888,23 @@ for game in games_list:
     opp_map[home] = away
     opp_map[away] = home
 
-current_teams = df_player_final.sort_values('GAME_DATE').groupby('PLAYER_NAME').tail(1)[['PLAYER_NAME', 'TEAM_ABBREVIATION']]
-current_teams.rename(columns={'TEAM_ABBREVIATION': 'CURRENT_TEAM'}, inplace=True)
+# Historical log teams cannot establish current membership after trades.
+current_teams = pd.DataFrame(columns=['PLAYER_NAME', 'CURRENT_TEAM'])
+if games_list:
+    try:
+        roster = commonallplayers.CommonAllPlayers(season=NBA_SEASON, is_only_current_season=1, timeout=20).get_data_frames()[0]
+    except Exception:
+        roster = nba_sources.current_roster(games_list)
+    current_teams = roster.loc[roster['TEAM_ABBREVIATION'].isin(opp_map), ['DISPLAY_FIRST_LAST', 'TEAM_ABBREVIATION']].copy()
+    current_teams.columns = ['PLAYER_NAME', 'CURRENT_TEAM']
+    if current_teams.empty:
+        raise RuntimeError('Current-season roster unavailable; refusing historical team assignments')
 df_player_final = df_player_final.merge(current_teams, on='PLAYER_NAME', how='left')
 df_player_upload = df_player_final.copy()
+# Opening week uses an explicitly labeled prior season only when current logs do not exist.
+df_logs, history_metadata = select_analysis_history(df_logs, NBA_SEASON)
+df_player_final = df_player_final.merge(history_metadata, on='PLAYER_NAME', how='inner')
+df_player_final = df_player_final[df_player_final['SEASON'] == df_player_final['ANALYSIS_SEASON']].copy()
 
 active_players = current_teams[current_teams['CURRENT_TEAM'].isin(opp_map.keys())].copy()
 active_players['TONIGHT_OPP'] = active_players['CURRENT_TEAM'].map(opp_map)
@@ -921,42 +913,49 @@ active_player_names = active_players['PLAYER_NAME'].tolist()
 df_player_final = df_player_final[df_player_final['CURRENT_TEAM'].isin(opp_map.keys())]
 print(f"🔥 Filtered dashboard for {len(games_list)} games on {today_str}!")
 
-timestamp_pst = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d %I:%M:%S %p EST')
+timestamp_pst = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d %I:%M:%S %p %Z')
 df_player_final['LAST_UPDATED'] = timestamp_pst
 df_player_upload['LAST_UPDATED'] = timestamp_pst
 
-if len(games_list) == 0 and os.environ.get('GITHUB_ACTIONS', '').lower() == 'true':
-    if schedule_source == 'unavailable':
-        print("⚠️ NBA schedule unavailable in GitHub Actions — skipping slate-specific work.")
-    else:
-        print("⚠️ No NBA games tonight — skipping slate-specific work in GitHub Actions.")
-    print("\n" + "=" * 60)
-    print("🏀 NBA ENGINE v8.5 — RUN COMPLETE")
-    print("=" * 60)
-    print(f"📅 Date:             {today_str}")
-    print(f"📆 Season:           {NBA_SEASON}")
-    print(f"🗂️  Snapshot:         {SNAPSHOT_DATE}")
-    print("🏟️  Games tonight:    0")
-    print(f"🏀 Active players:    {len(df_player_final['PLAYER_NAME'].unique())}")
-    print("🎲 Player props:      Skipped")
-    print("📈 +EV props:         Skipped")
-    print("🔄 Line movers:       Skipped")
-    print("🤖 AI Picks:          Skipped")
-    print(f"📝 Google Sheet:      {SHEET_ID}")
-    print(f"🕐 Last updated:      {timestamp_pst}")
-    print("=" * 60)
+def publish_status(status):
+    try:
+        ws = sh.worksheet('NBA_Status')
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title='NBA_Status', rows=10, cols=8)
+    replace_sheet_values(ws, [['SLATE_DATE', 'SEASON', 'STATUS', 'GAMES', 'LAST_UPDATED', 'RUN_ID', 'WARNINGS'],
+                              [today_str, NBA_SEASON, status, len(games_list), timestamp_pst, RUN_ID, '; '.join(PUBLICATION_WARNINGS)]])
+    runlog.record_write('NBA_Status', 1)
+
+if schedule_source == 'unavailable':
+    raise RuntimeError('Schedule unavailable; cannot determine whether tonight has games')
+if not games_list:
+    # Empty and unavailable are different states. Expire actionable data on off days.
+    for tab, headers in {
+        'Tonights_Opponent': SHEET_SCHEMAS['Tonights_Opponent']['required'],
+        'DK_Player_Props': SHEET_SCHEMAS['DK_Player_Props']['required'],
+        'Prop_EV': ['PLAYER_NAME', 'METRIC', 'DK_LINE', 'LAST_UPDATED'],
+        'Line_Movers': ['PLAYER_NAME', 'METRIC', 'LAST_UPDATED'],
+    }.items():
+        try:
+            ws = sh.worksheet(tab)
+        except gspread.exceptions.WorksheetNotFound:
+            ws = sh.add_worksheet(title=tab, rows=100, cols=len(headers))
+        replace_sheet_values(ws, [headers])
+        runlog.record_write(tab, 0)
+    publish_status('NO_GAMES')
     raise SystemExit(0)
+publish_status('UPDATING')
 
 # --- 5. FETCH TEAM ADVANCED STATS ---
 print("Fetching Team Advanced Stats...")
 try:
     df_adv = leaguedashteamstats.LeagueDashTeamStats(
         measure_type_detailed_defense='Advanced',
-        season=NBA_SEASON
+        season=NBA_SEASON, timeout=60
     ).get_data_frames()[0]
     df_opp = leaguedashteamstats.LeagueDashTeamStats(
         measure_type_detailed_defense='Opponent',
-        season=NBA_SEASON
+        season=NBA_SEASON, timeout=60
     ).get_data_frames()[0]
     df_team_final = df_adv[['TEAM_ID', 'TEAM_NAME', 'PACE', 'DEF_RATING']].merge(
         df_opp[['TEAM_ID', 'OPP_FG3A']], on='TEAM_ID'
@@ -968,6 +967,7 @@ try:
     full_to_abbr = {t['full_name']: t['abbreviation'] for t in nba_teams}
     df_team_final['TEAM_ABBREVIATION'] = df_team_final['TEAM_ID'].map(team_dict)
 except Exception as e:
+    PUBLICATION_WARNINGS.append('Team advanced statistics unavailable')
     print(f"⚠️ Team advanced stats unavailable — using minimal team fallback: {e}")
     nba_teams = teams.get_teams()
     full_to_abbr = {t['full_name']: t['abbreviation'] for t in nba_teams}
@@ -985,7 +985,7 @@ df_odds = pd.DataFrame()
 try:
     def _fetch_game_odds():
         response = requests.get('https://api.the-odds-api.com/v4/sports/basketball_nba/odds',
-            params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'spreads,totals', 'oddsFormat': 'american', 'bookmakers': 'draftkings'})
+            params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'spreads,totals', 'oddsFormat': 'american', 'bookmakers': 'draftkings'}, timeout=30)
         check_quota_or_abort(response, "NBA game odds")
         if response.status_code != 200:
             print(f"❌ Odds API Error: {response.status_code} — {response.text[:200]}")
@@ -1049,9 +1049,13 @@ h2h_agg = df_h2h_matches.groupby('PLAYER_NAME')[h2h_cols].mean().round(2).reset_
 h2h_agg.rename(columns={c: f'H2H_{c}' for c in h2h_cols}, inplace=True)
 
 # --- 5.6 BUILD TONIGHT'S SHEET ---
-tonight_cols = ['PLAYER_NAME', 'CURRENT_TEAM', 'TONIGHT_OPP', 'OPP_DEF_RTG', 'OPP_PACE', 'OPP_3PA_ALLOWED',
-                'L5_GAMES_PLAYED', 'GAMES_LAST_7D', 'LIMITED_SAMPLE', 'RETURNING']
-df_tonight_sheet = df_player_final[[c for c in tonight_cols if c in df_player_final.columns]].drop_duplicates(subset=['PLAYER_NAME'])
+df_context = df_player_final[['PLAYER_NAME', 'OPP_DEF_RTG', 'OPP_PACE', 'OPP_3PA_ALLOWED']].drop_duplicates(subset=['PLAYER_NAME'])
+df_tonight_sheet = active_players[['PLAYER_NAME', 'CURRENT_TEAM', 'TONIGHT_OPP']].merge(df_context, on='PLAYER_NAME', how='left')
+df_tonight_sheet = df_tonight_sheet.merge(history_metadata, on='PLAYER_NAME', how='left')
+df_tonight_sheet['BASELINE_TYPE'] = df_tonight_sheet['BASELINE_TYPE'].fillna('NO_NBA_HISTORY')
+df_tonight_sheet['ANALYSIS_SEASON'] = df_tonight_sheet['ANALYSIS_SEASON'].fillna(NBA_SEASON)
+for count_col in ['CURRENT_GAMES', 'PRIOR_GAMES']:
+    df_tonight_sheet[count_col] = df_tonight_sheet[count_col].fillna(0).astype(int)
 df_tonight_sheet.rename(columns={'CURRENT_TEAM': 'TEAM_ABBREVIATION'}, inplace=True)
 df_tonight_sheet['CURRENT_TEAM'] = df_tonight_sheet['TEAM_ABBREVIATION']
 df_tonight_sheet = df_tonight_sheet.merge(h2h_agg, on='PLAYER_NAME', how='left')
@@ -1068,6 +1072,36 @@ now_est = datetime.now(pytz.timezone('US/Eastern'))
 yesterday_str = (pd.Timestamp(now_est.date()) - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
 team_last_game = df_logs.sort_values('GAME_DATE').groupby('TEAM_ABBREVIATION')['GAME_DATE'].max().astype(str).to_dict() if not df_logs.empty else {}
 df_tonight_sheet['B2B'] = df_tonight_sheet['TEAM_ABBREVIATION'].map(lambda t: str(team_last_game.get(t, '')) == yesterday_str)
+
+df_tonight_sheet = df_tonight_sheet.merge(df_sample_flags.drop(columns=['PLAYER_ID']), on='PLAYER_NAME', how='left')
+df_tonight_sheet['L5_GAMES_PLAYED'] = df_tonight_sheet['L5_GAMES_PLAYED'].fillna(0)
+df_tonight_sheet['GAMES_LAST_7D'] = df_tonight_sheet['GAMES_LAST_7D'].fillna(0)
+df_tonight_sheet['LIMITED_SAMPLE'] = df_tonight_sheet['CURRENT_GAMES'] < 5
+df_tonight_sheet['RETURNING'] = df_tonight_sheet['RETURNING'].fillna(False)
+start_by_team = {}
+for game in games_list:
+    for side in ('homeTeam', 'awayTeam'):
+        start_by_team[game[side]['teamTricode']] = game.get('gameTimeUTC', '')
+df_tonight_sheet['COMMENCE_TIME'] = df_tonight_sheet['CURRENT_TEAM'].map(start_by_team)
+df_tonight_sheet['SLATE_DATE'] = today_str
+df_tonight_sheet['SEASON'] = NBA_SEASON
+# Current roster membership is separate from verified availability.
+report_path=os.environ.get('NBA_INJURY_REPORT_CSV')
+if report_path:
+    injury_report=nba_injuries.report_from_csv(open(report_path, encoding='utf-8').read())
+else:
+    injury_report=nba_injuries.fetch_official_report(
+        nba_injuries.ReportHTTP(), today_str,
+        {**{t['full_name']:t['abbreviation'] for t in teams.get_teams()}, 'LA Clippers':'LAC'},
+        datetime.now(pytz.UTC))
+injury_people=nba_injuries.apply_availability(
+    df_tonight_sheet.to_dict('records'), injury_report, today_str, datetime.now(pytz.UTC))
+if injury_people:
+    df_injuries=pd.DataFrame(injury_people)[['PLAYER_NAME','AVAILABILITY','INJURY_SOURCE','INJURY_REPORT_TIME','INJURY_DETAIL','MINUTES_RESTRICTED']]
+    df_tonight_sheet=df_tonight_sheet.merge(df_injuries,on='PLAYER_NAME',how='left')
+    df_tonight_sheet['STATUS']=df_tonight_sheet['AVAILABILITY']
+    if (df_tonight_sheet['STATUS']!='AVAILABLE').any():
+        PUBLICATION_WARNINGS.append('Some player availability is unverified or restricted; affected picks withheld')
 
 df_tonight_sheet['LAST_UPDATED'] = timestamp_pst
 df_tonight_sheet = df_tonight_sheet.drop_duplicates(subset=['PLAYER_NAME'])
@@ -1118,7 +1152,7 @@ else:
 
 # --- 5.8 HOME/AWAY SPLITS ---
 print("Calculating Home/Away Splits...")
-df_logs['HOME_AWAY'] = np.where(df_logs['MATCHUP'].str.contains('vs.'), 'Home', 'Away')
+df_logs['HOME_AWAY'] = np.where(df_logs['MATCHUP'].str.contains('vs.', regex=False), 'Home', 'Away')
 avg_metrics = ['MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'FG3M', 'FG3A', 'PRA', 'PR', 'PA', 'RA', 'STOCKS', 'DK_FP', 'UD_FP', 'FPPM', 'USAGE_PPM']
 sum_metrics = ['DD']
 all_metrics = avg_metrics + sum_metrics
@@ -1135,6 +1169,7 @@ else:
     ha_pivot = df_home_away.pivot(index='PLAYER_NAME', columns='HOME_AWAY', values=all_metrics)
     ha_pivot.columns = [f'{s}_{l}' for s, l in ha_pivot.columns]
     hcp = df_home_away.pivot(index='PLAYER_NAME', columns='HOME_AWAY', values='GAMES')
+    hcp = hcp.reindex(columns=['Away', 'Home'], fill_value=0)
     hcp.columns = ['Away_GAMES', 'Home_GAMES']
     ha_pivot = ha_pivot.join(hcp)
     for m in all_metrics:
@@ -1192,11 +1227,11 @@ DK_PLAYER_PROPS_COLUMNS = [
     'PLAYER_NAME', 'METRIC', 'DK_LINE', 'OVER_ODDS', 'UNDER_ODDS', 'BOOK',
     'REFERENCE_BOOK', 'BEST_OVER_BOOK', 'BEST_OVER_ODDS', 'BEST_OVER_DELTA_PP',
     'BEST_UNDER_BOOK', 'BEST_UNDER_ODDS', 'BEST_UNDER_DELTA_PP',
-    'ALT_LINE_AVAILABLE', 'ALT_LINE_BOOKS', 'LAST_UPDATED'
+    'ALT_LINE_AVAILABLE', 'ALT_LINE_BOOKS', 'EVENT_ID', 'COMMENCE_TIME', 'QUOTE_TIME', 'LAST_UPDATED'
 ]
 ALL_BOOKS_PROPS_COLUMNS = [
     'PLAYER_NAME', 'METRIC', 'LINE', 'BOOK', 'OVER_ODDS', 'UNDER_ODDS',
-    'OVER_IMPLIED', 'UNDER_IMPLIED', 'LAST_UPDATED'
+    'OVER_IMPLIED', 'UNDER_IMPLIED', 'EVENT_ID', 'COMMENCE_TIME', 'QUOTE_TIME', 'LAST_UPDATED'
 ]
 
 
@@ -1207,7 +1242,7 @@ def american_to_implied(odds):
         if isinstance(odds, str) and odds.strip().lower() in {'', 'nan', 'none'}:
             return np.nan
         odds = float(odds)
-        if odds == 0:
+        if not np.isfinite(odds) or abs(odds) < 100:
             return np.nan
         return (-odds / (-odds + 100)) if odds < 0 else (100 / (odds + 100))
     except (TypeError, ValueError):
@@ -1360,6 +1395,9 @@ def compute_best_book_columns(df_long, timestamp_value):
             'OVER_ODDS': ref.get('OVER_ODDS'),
             'UNDER_ODDS': ref.get('UNDER_ODDS'),
             'BOOK': ref.get('BOOK'),
+            'EVENT_ID': ref.get('EVENT_ID', ''),
+            'COMMENCE_TIME': ref.get('COMMENCE_TIME', ''),
+            'QUOTE_TIME': ref.get('QUOTE_TIME', ''),
             'REFERENCE_BOOK': reference_book,
             'BEST_OVER_BOOK': best_over_book,
             'BEST_OVER_ODDS': best_over_odds,
@@ -1418,6 +1456,7 @@ try:
         print(f"❌ Failed to fetch events: {ev_resp.status_code} — {ev_resp.text[:200]}")
     else:
         ev_data = ev_resp.json()
+        events_by_id = {e['id']:e for e in ev_data}
         active_team_names = set()
         for t in nba_teams:
             if t['abbreviation'] in opp_map:
@@ -1426,12 +1465,13 @@ try:
                 active_team_names.add('la clippers')
         tonight_ids = [
             e['id'] for e in ev_data
-            if e.get('home_team', '').lower() in active_team_names
-            or e.get('away_team', '').lower() in active_team_names
+            if event_is_on_date(e, today_str) and (
+                e.get('home_team', '').lower() in active_team_names
+                or e.get('away_team', '').lower() in active_team_names)
         ]
         if not tonight_ids:
             print(f"⏭️  No {SPORT_LABEL} games scheduled — skipping props pull.")
-            sys.exit(0)
+            PUBLICATION_WARNINGS.append('Player markets unavailable for the current slate')
         print(f"🏟️ Found {len(tonight_ids)} events — fetching props from {len(ACTIVE_PROP_BOOKMAKERS)} books...")
 
         all_book_rows = []
@@ -1469,7 +1509,10 @@ try:
                         mn = market_mapping.get(mkt.get('key'))
                         if not mn:
                             continue
-                        all_book_rows.extend(parse_multi_book_market(mkt, mn, book_key, BINARY_PROP_MARKETS))
+                        market_rows = parse_multi_book_market(mkt, mn, book_key, BINARY_PROP_MARKETS)
+                        for market_row in market_rows:
+                            market_row.update(EVENT_ID=eid, COMMENCE_TIME=events_by_id[eid].get('commence_time', ''), QUOTE_TIME=mkt.get('last_update') or bk.get('last_update', ''))
+                        all_book_rows.extend(market_rows)
             time.sleep(1)
 
         df_all_books = finalize_all_books_frame(all_book_rows, timestamp_pst, name_fixes)
@@ -1511,12 +1554,10 @@ if not df_props.empty and len(df_logs) > 0:
     logs_by_player = {name: group.sort_values('GAME_DATE', ascending=False) for name, group in df_logs.groupby('PLAYER_NAME')}
 
     def calc_implied(odds):
-        if odds is None or odds == 0: return None
-        odds = float(odds)
-        return abs(odds) / (abs(odds) + 100) if odds < 0 else 100 / (odds + 100)
+        return finite_odds_probability(odds)
 
     def calc_dollar_ev(hit_rate, odds):
-        if odds is None or hit_rate is None: return None
+        if finite_odds_probability(odds) is None or hit_rate is None: return None
         odds = float(odds)
         payout = 100 / abs(odds) if odds < 0 else odds / 100
         return round((hit_rate * payout - ((1 - hit_rate) * 1)) * 100, 2)
@@ -1546,27 +1587,32 @@ if not df_props.empty and len(df_logs) > 0:
         hits_l10 = (p_logs.head(10)[metric] > dk_line).sum()
         hits_l5 = (p_logs.head(5)[metric] > dk_line).sum()
 
-        season_rate = hits_all / non_push if non_push > 0 else 0
-        l10_rate = hits_l10 / min(10, len(p_logs)) if len(p_logs) >= 5 else None
-        l5_rate = hits_l5 / min(5, len(p_logs)) if len(p_logs) >= 5 else None
+        season_rate = non_push_rate(p_logs[metric], dk_line)
+        if season_rate is None:
+            continue
+        l10_rate = non_push_rate(p_logs.head(10)[metric], dk_line)
+        l5_rate = non_push_rate(p_logs.head(5)[metric], dk_line)
 
         over_impl = calc_implied(over_odds)
         under_impl = calc_implied(under_odds)
         edge_over = round((season_rate - over_impl) * 100, 1) if over_impl else None
         edge_under = round(((1 - season_rate) - under_impl) * 100, 1) if under_impl else None
-        edge_multiplier = 0.5 if returning else 1.0
+        baseline_info = history_metadata[history_metadata['PLAYER_NAME'] == player]
+        is_prior_baseline = not baseline_info.empty and baseline_info.iloc[0]['BASELINE_TYPE'] == 'PRIOR_SEASON'
+        edge_multiplier = 0.35 if is_prior_baseline else (0.5 if returning else 1.0)
         if edge_over is not None:
             edge_over = round(edge_over * edge_multiplier, 1)
         if edge_under is not None:
             edge_under = round(edge_under * edge_multiplier, 1)
 
         ev_rows.append({
-            'PLAYER_NAME': player, 'METRIC': metric, 'DK_LINE': dk_line,
+            'PLAYER_NAME': player, 'METRIC': metric, 'DK_LINE': dk_line, 'BOOK': prop.get('BOOK', 'draftkings'),
+            'BASELINE_TYPE': 'PRIOR_SEASON' if is_prior_baseline else 'CURRENT',
             'OVER_ODDS': over_odds, 'UNDER_ODDS': under_odds,
             'HITS_SEASON': int(hits_all), 'GAMES': int(games_all), 'PUSHES': int(pushes_all),
             'HIT_RATE_SEASON': round(season_rate, 3),
-            'HIT_RATE_L10': round(l10_rate, 3) if l10_rate else None,
-            'HIT_RATE_L5': round(l5_rate, 3) if l5_rate else None,
+            'HIT_RATE_L10': round(l10_rate, 3) if l10_rate is not None else None,
+            'HIT_RATE_L5': round(l5_rate, 3) if l5_rate is not None else None,
             'L5_GAMES_PLAYED': l5_games_played,
             'GAMES_LAST_7D': games_last_7d,
             'LIMITED_SAMPLE': limited_sample,
@@ -1575,8 +1621,8 @@ if not df_props.empty and len(df_logs) > 0:
             'UNDER_IMPLIED': round(under_impl, 3) if under_impl else None,
             'EDGE_OVER': edge_over, 'EDGE_UNDER': edge_under,
             'EDGE_MULTIPLIER': edge_multiplier,
-            'EV_OVER_$100': round(calc_dollar_ev(season_rate, over_odds) * edge_multiplier, 2) if calc_dollar_ev(season_rate, over_odds) is not None else None,
-            'EV_UNDER_$100': round(calc_dollar_ev(1 - season_rate, under_odds) * edge_multiplier, 2) if calc_dollar_ev(1 - season_rate, under_odds) is not None else None,
+            'EV_OVER_$100': round(calc_dollar_ev(season_rate, over_odds) * (non_push / games_all) * edge_multiplier, 2) if calc_dollar_ev(season_rate, over_odds) is not None else None,
+            'EV_UNDER_$100': round(calc_dollar_ev(1 - season_rate, under_odds) * (non_push / games_all) * edge_multiplier, 2) if calc_dollar_ev(1 - season_rate, under_odds) is not None else None,
             'BEST_BET': 'OVER' if (edge_over or 0) > 5 else ('UNDER' if (edge_under or 0) > 5 else ''),
             'LAST_UPDATED': timestamp_pst
         })
@@ -1598,6 +1644,8 @@ else:
 # --- 5.93 LINE MOVEMENT TRACKER ---
 print("\nChecking for line movement...")
 if not df_props.empty:
+    df_props['SLATE_DATE'] = today_str
+if not df_props.empty:
     try:
         try:
             ws_snap = sh.worksheet('Props_Snapshot')
@@ -1609,7 +1657,7 @@ if not df_props.empty:
         if not df_snapshot.empty and 'DK_LINE' in df_snapshot.columns:
             snap_lookup = {}
             for _, row in df_snapshot.iterrows():
-                key = f"{row.get('PLAYER_NAME', '')}|{row.get('METRIC', '')}"
+                key = (row.get('SLATE_DATE',''),row.get('EVENT_ID',''),row.get('BOOK','draftkings'),row.get('PLAYER_NAME',''),row.get('METRIC',''))
                 snap_lookup[key] = {
                     'OLD_LINE': float(row.get('DK_LINE', 0)),
                     'OLD_OVER': row.get('OVER_ODDS'),
@@ -1619,7 +1667,7 @@ if not df_props.empty:
 
             mover_rows = []
             for _, prop in df_props.iterrows():
-                key = f"{prop['PLAYER_NAME']}|{prop['METRIC']}"
+                key = (today_str,prop.get('EVENT_ID',''),prop.get('BOOK','draftkings'),prop['PLAYER_NAME'],prop['METRIC'])
                 if key in snap_lookup:
                     old = snap_lookup[key]
                     old_line = old['OLD_LINE']
@@ -1651,8 +1699,7 @@ if not df_props.empty:
             ws_snap = sh.worksheet('Props_Snapshot')
         except gspread.exceptions.WorksheetNotFound:
             ws_snap = sh.add_worksheet(title='Props_Snapshot', rows=1000, cols=20)
-        ws_snap.clear()
-        ws_snap.update([df_props.columns.tolist()] + [[clean_cell(v) for v in row] for row in df_props.values.tolist()])
+        replace_sheet_values(ws_snap, [df_props.columns.tolist()] + [[clean_cell(v) for v in row] for row in df_props.values.tolist()])
         print("📸 Props snapshot saved for next run.")
 
     except Exception as e:
@@ -1670,11 +1717,7 @@ existing_daily_picks = load_existing_daily_picks(sh, today_str)
 seen_pick_keys = set()
 if len(existing_daily_picks) > 0:
     for _, row in existing_daily_picks.iterrows():
-        key = (
-            normalizePlayerName(str(row.get('player', ''))),
-            str(row.get('prop_type', '')).strip().upper(),
-            str(row.get('lean', '')).strip().upper(),
-        )
+        key = selection_key(row, normalizePlayerName)
         seen_pick_keys.add(key)
 existing_run_numbers = pd.to_numeric(existing_daily_picks.get('RUN_NUMBER', pd.Series(dtype=float)), errors='coerce').dropna().astype(int)
 today_run_number = int(existing_run_numbers.max()) + 1 if not existing_run_numbers.empty else 1
@@ -1743,6 +1786,7 @@ if GEMINI_API_KEY and len(games_list) > 0:
               'Seas_MIN', 'L5_MIN', 'Seas_UD_FP', 'L5_UD_FP',
               'L5_GAMES_PLAYED', 'GAMES_LAST_7D', 'LIMITED_SAMPLE', 'RETURNING']
         available = [c for c in stats_cols if c in latest.columns]
+        available = [c for c in available if c == 'PLAYER_NAME' or c not in player_pool.columns]
         player_pool = player_pool.merge(latest[available], on='PLAYER_NAME', how='left')
 
         if not df_props.empty:
@@ -1766,14 +1810,14 @@ if GEMINI_API_KEY and len(games_list) > 0:
             player_pool = player_pool.merge(split_frame, on='PLAYER_NAME', how='left')
 
         print(f"Players before injury filter: {len(player_pool)}")
-        HARD_OUT = {"OUT", "O", "DOUBTFUL", "D", "INACTIVE", "SUSPENDED"}
+        HARD_OUT = {"OUT", "O", "DOUBTFUL", "D", "INACTIVE", "SUSPENDED", "UNKNOWN", "QUESTIONABLE", "PROBABLE"}
         status_cols = [c for c in ['STATUS', 'PLAYER_STATUS', 'INJURY_STATUS', 'REPORT_STATUS', 'AVAILABILITY', 'ACTIVE_STATUS'] if c in player_pool.columns]
         removed_debug = []
         keep_mask = []
         for _, row in player_pool.iterrows():
             raw_status = first_present(row, status_cols, default="")
             status_clean = normalize_status(raw_status)
-            remove_player = status_clean in HARD_OUT
+            remove_player = status_clean in HARD_OUT or bool(row.get('MINUTES_RESTRICTED', False))
             keep_mask.append(not remove_player)
             if remove_player and len(removed_debug) < 20:
                 removed_debug.append({
@@ -1783,9 +1827,8 @@ if GEMINI_API_KEY and len(games_list) > 0:
                     'reason': f"excluded_hard_out_status:{status_clean}"
                 })
         filtered_pool = player_pool[pd.Series(keep_mask, index=player_pool.index)].copy()
-        if filtered_pool.empty and props_fallback_used and not player_pool.empty:
-            print("WARNING: injury/status filter emptied props fallback pool; restoring unfiltered fallback pool")
-            filtered_pool = player_pool.copy()
+        if filtered_pool.empty:
+            raise RuntimeError('No players have verified availability; AI picks withheld')
         print(f"Players after injury filter: {len(filtered_pool)}")
         if removed_debug:
             print("First removed players:")
@@ -1809,7 +1852,7 @@ if GEMINI_API_KEY and len(games_list) > 0:
         active_players_for_gemini = prop_pool.copy()
         if len(active_players_for_gemini) == 0:
             print("WARNING: active player pool empty after filtering; falling back to tonight player pool")
-            active_players_for_gemini = player_pool.copy()
+            active_players_for_gemini = filtered_pool.copy()
         if len(active_players_for_gemini) == 0 and not df_props.empty:
             print("WARNING: tonight player pool still empty; building direct Gemini pool from live props")
             active_players_for_gemini = pd.DataFrame({
@@ -1935,7 +1978,7 @@ if GEMINI_API_KEY and len(games_list) > 0:
         valid_player_name_map = {normalizePlayerName(n): n for n in active_players_for_gemini['PLAYER_NAME'].tolist() if clean_name(n)}
 
         season_phase = get_nba_season_phase(today_str, games_list)
-        prompt = f"""You are an expert NBA props analyst. Today is {today_str}. NBA {season_phase}.
+        prompt = f"""You are an expert NBA props analyst. Today is {today_str}. Season {NBA_SEASON}. Use only the supplied current slate.
 
 TONIGHT'S GAMES:
 {games_str}
@@ -1948,23 +1991,23 @@ ACTIVE PROP STREAKS:
 
 RULES:
 - CRITICAL: ONLY pick players from the PLAYER DATA list above. Do NOT include any player not in the list.
-- Return EXACTLY 10 ranked picks as a JSON array
+- Return up to 10 ranked picks as a JSON array. Do not force picks when evidence is insufficient.
 - Confidence tiers: SMASH (top 3 highest conviction only), STRONG (next 3-4), LEAN (rest)
 - Players flagged RETURNING have depressed lines due to injury/absence. Their season averages are NOT reliable short-term predictors. Treat with extreme caution — do NOT SMASH these players.
 - Players flagged B2B are on the second night of a back-to-back. Deprioritize them unless the edge is exceptional.
 - STAR players are the top 20 by season UD fantasy points in tonight's valid prop pool.
 - At least 5 of your 10 picks should come from STAR players. Bench players can fill the remaining slots only when they have exceptional edges.
 - Available prop types: PTS, REB, PRA, PR, PA, RA, FG3M, STL, BLK, UD_FP
-- Do NOT pick AST — observed ~29% hit rate during NBA playoffs (slower pace, more isolation offense). Hard blacklist for playoffs and play-in. Revisit when regular season returns.
+- Do NOT pick AST — excluded by the current configuration pending performance review.
 - DIVERSIFY prop types: max 3 picks of the same prop type per slate. Mix in PTS, REB, FG3M, and the cleanest combo props.
 - Prefer PR over PRA when both are available for the same player.
 - PRA requires a stronger edge threshold than other props. If the PRA edge is only marginal, use LEAN or skip it.
 - STRONG should require multiple confirming signals: positive EV, strong hit rate, and supportive matchup/split context. If only one signal is strong, use LEAN instead.
-- Prefer live DK lines when available; only fall back to L5 average if no live line exists.
+- Select only supplied live market lines. Skip any player/metric without a quoted line.
 - Favor cleaner one-stat edges over forcing combo props unless the combo edge is clearly stronger.
 - Be much more selective on UNDER picks. Only use UNDER when the edge is clearly stronger than the comparable OVER case and the player context supports downside.
 - Cap UNDER picks at 2 per slate. Avoid LEAN UNDER picks entirely.
-- Use DK lines when available; otherwise use L5 average. NEVER return null for line.
+- Never substitute a statistical average for a market line. Return fewer picks if markets are insufficient.
 - Use the listed best prop signals when present: higher EV% and higher hit rate should drive conviction.
 
 ANALYSIS FACTORS:
@@ -1984,7 +2027,7 @@ For each pick provide:
 - team (abbreviation)
 - game (e.g. "TOR @ BOS")
 - prop_type (from list above)
-- line (DK line or L5 average)
+- line (exact supplied live market line)
 - lean (OVER or UNDER)
 - confidence (SMASH, STRONG, or LEAN)
 - rationale (1 sentence, under 15 words)
@@ -2100,17 +2143,18 @@ IMPORTANT: Return ONLY the JSON array. No markdown, no preamble."""
         print(f" - final sent to Gemini: {len(active_players_for_gemini)}")
         print(f" - picks before post-filter: {bf}")
         print(f" - picks after post-filter: {len(df_picks)}")
-        # Fill null lines with L5 average
-        for i, row in df_picks.iterrows():
-            if pd.isna(row.get('line')) or row.get('line') is None:
-                pd2 = active_players_for_gemini[active_players_for_gemini['PLAYER_NAME'] == row['player']]
-                if not pd2.empty:
-                    fb = pd2.iloc[0].get(f"L5_{row.get('prop_type', 'PRA')}")
-                    if pd.notna(fb):
-                        df_picks.at[i, 'line'] = round(float(fb), 1)
-                        print(f"   📎 Filled null line for {row['player']}: {round(float(fb), 1)}")
+        df_picks = pd.DataFrame(validate_market_picks(
+            df_picks.to_dict('records'), df_props.to_dict('records'), normalizePlayerName))
+        if df_picks.empty:
+            raise RuntimeError('No picks matched a priced live market; no picks published')
 
+        tonight_by_name = {normalizePlayerName(r['PLAYER_NAME']): r for r in df_tonight_sheet.to_dict('records')}
+        df_picks['team'] = df_picks['player'].map(lambda n: tonight_by_name.get(normalizePlayerName(n), {}).get('CURRENT_TEAM', ''))
+        df_picks['opponent'] = df_picks['player'].map(lambda n: tonight_by_name.get(normalizePlayerName(n), {}).get('TONIGHT_OPP', ''))
+        prior_names = set(history_metadata.loc[history_metadata['BASELINE_TYPE'] == 'PRIOR_SEASON', 'PLAYER_NAME'].map(normalizePlayerName))
+        df_picks.loc[df_picks['player'].map(normalizePlayerName).isin(prior_names), 'confidence'] = 'LEAN'
         df_picks['DATE'] = today_str
+        df_picks['RUN_ID'] = RUN_ID
         df_picks['RUN_TIME'] = timestamp_pst
         df_picks['RUN_NUMBER'] = today_run_number
         df_picks['LAST_UPDATED'] = timestamp_pst
@@ -2140,11 +2184,7 @@ IMPORTANT: Return ONLY the JSON array. No markdown, no preamble."""
         dedup_keep = []
         duplicate_drop_msgs = []
         for _, row in df_picks.iterrows():
-            pick_key = (
-                normalizePlayerName(row.get('player', '')),
-                str(row.get('prop_type', '')).strip().upper(),
-                str(row.get('lean', '')).strip().upper(),
-            )
+            pick_key = selection_key(row, normalizePlayerName)
             if pick_key in seen_pick_keys:
                 duplicate_drop_msgs.append(f"{row.get('player')} {row.get('prop_type')} {row.get('lean')} — duplicate prior run")
                 print(f"🔁 Skipping duplicate pick: {row.get('player')} {row.get('prop_type')} {row.get('lean')}")
@@ -2155,8 +2195,8 @@ IMPORTANT: Return ONLY the JSON array. No markdown, no preamble."""
             dropped_prop_caps.extend(duplicate_drop_msgs)
         df_picks = pd.DataFrame(dedup_keep)
 
-        col_order = ['DATE', 'RUN_NUMBER', 'RUN_TIME', 'rank', 'game', 'matchup', 'game_time', 'player', 'team',
-                     'opponent', 'prop_type', 'line', 'lean', 'confidence',
+        col_order = ['DATE', 'RUN_ID', 'RUN_NUMBER', 'RUN_TIME', 'rank', 'game', 'matchup', 'game_time', 'player', 'team',
+                     'opponent', 'prop_type', 'line', 'lean', 'confidence', 'BOOK', 'ODDS', 'EVENT_ID', 'COMMENCE_TIME', 'QUOTE_TIME',
                      'rationale', 'reasoning', 'injury_context', 'spread', 'total', 'DATA_SOURCE', 'source',
                      'CONSENSUS_COUNT', 'CONSENSUS_RUNS', 'CONSENSUS_TAG',
                      'CLV_OPEN_LINE', 'CLV_LATEST_LINE', 'CLV_DELTA', 'CLV_LAST_UPDATE',
@@ -2242,17 +2282,23 @@ def validate_sheet_schema(sheet_name, df):
                 pass
 
 def safe_upload(sheet_name, df):
-    if df is None or len(df) == 0:
-        print(f"⏭️ Skipping '{sheet_name}' — no data.")
-        return
+    if df is None:
+        raise ValueError(f'{sheet_name}: missing dataframe')
+    if df.empty:
+        # Clear old actionable rows with a stable header-only snapshot.
+        headers = SHEET_SCHEMAS.get(sheet_name, {}).get('required', list(df.columns))
+        df = pd.DataFrame(columns=headers or ['LAST_UPDATED'])
+    df = df.copy()
+    df['SLATE_DATE'] = today_str
+    df['RUN_ID'] = RUN_ID
+    df['SEASON'] = NBA_SEASON if sheet_name != 'Player_Stats' else df['SEASON']
     validate_sheet_schema(sheet_name, df)
     try:
         try:
             ws = sh.worksheet(sheet_name)
         except gspread.exceptions.WorksheetNotFound:
             ws = sh.add_worksheet(title=sheet_name, rows=1000, cols=150)
-        ws.clear()
-        ws.update([df.columns.tolist()] + [[clean_cell(v) for v in row] for row in df.values.tolist()])
+        replace_sheet_values(ws, [df.columns.tolist()] + [[clean_cell(v) for v in row] for row in df.values.tolist()])
         print(f"✅ Successfully updated '{sheet_name}'")
         try:
             runlog.record_write(sheet_name, len(df))
@@ -2260,7 +2306,8 @@ def safe_upload(sheet_name, df):
             pass
         time.sleep(1)
     except Exception as e:
-        print(f"❌ FAILED '{sheet_name}': {e}")
+        runlog.fail(e)
+        raise
 
 def normalize_date(val):
     """Convert any date format to ISO for consistent comparison.
@@ -2290,6 +2337,15 @@ def append_upload(sheet_name, df):
             ws.update([df.columns.tolist()])
 
         existing = ws.get_all_values()
+        if existing:
+            existing_keys = {selection_key(dict(zip(existing[0], row)), normalizePlayerName) for row in existing[1:]}
+            kept=[]
+            for row in df.to_dict('records'):
+                key=selection_key(row, normalizePlayerName)
+                if key in existing_keys:continue
+                existing_keys.add(key);kept.append(row)
+            df=pd.DataFrame(kept, columns=df.columns)
+            if df.empty:return
 
         if len(existing) <= 1:
             cleaned = [[clean_cell(v) for v in row] for row in df.values.tolist()]
@@ -2309,8 +2365,7 @@ def append_upload(sheet_name, df):
                     row_map = {headers[i]: row[i] for i in range(min(len(headers), len(row)))}
                     final_rows.append([row_map.get(h, "") for h in all_headers])
                 final_rows.extend(cleaned)
-                ws.clear()
-                ws.update(final_rows, value_input_option='RAW')
+                replace_sheet_values(ws, final_rows)
             else:
                 ws.append_rows(cleaned, value_input_option='RAW')
             print(f"✅ Appended {len(df)} rows to '{sheet_name}'")
@@ -2327,7 +2382,8 @@ def append_upload(sheet_name, df):
             pass
         time.sleep(1)
     except Exception as e:
-        print(f"❌ FAILED append '{sheet_name}': {e}")
+        runlog.fail(e)
+        raise
 
 safe_upload('Player_Stats', df_player_upload)
 safe_upload('Team_Advanced', df_team_final)
@@ -2335,25 +2391,10 @@ safe_upload('Tonights_Opponent', df_tonight_sheet)
 safe_upload('Teammate_Correlations', df_correlation)
 safe_upload('Home_Away_Splits', ha_pivot)
 
-if not df_props.empty:
-    safe_upload('DK_Player_Props', df_props)
-else:
-    print("⚠️ Skipping DK_Player_Props — no data.")
-
-if not df_all_books.empty:
-    safe_upload('All_Books_Props', df_all_books)
-else:
-    print("⚠️ Skipping All_Books_Props — no data.")
-
-if not df_ev.empty:
-    safe_upload('Prop_EV', df_ev)
-else:
-    print("⚠️ Skipping Prop_EV — no data.")
-
-if not df_movers.empty:
-    safe_upload('Line_Movers', df_movers)
-else:
-    print("ℹ️ No line movers to upload.")
+safe_upload('DK_Player_Props', df_props)
+safe_upload('All_Books_Props', df_all_books)
+safe_upload('Prop_EV', df_ev)
+safe_upload('Line_Movers', df_movers)
 
 if not df_picks.empty:
     try:
@@ -2363,6 +2404,8 @@ if not df_picks.empty:
     append_upload('Daily_Picks', df_picks)
 else:
     print("⚠️ Skipping Daily_Picks — no picks.")
+
+publish_status('WARMUP' if df_tonight_sheet.empty else ('DEGRADED' if PUBLICATION_WARNINGS else ('READY' if not df_props.empty else 'AWAITING_PROPS')))
 
 print("\n" + "=" * 60)
 print("🏀 NBA ENGINE v8.5 — RUN COMPLETE")

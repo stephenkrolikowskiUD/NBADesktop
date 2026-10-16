@@ -53,3 +53,18 @@ NBA currently runs manually in Colab. GitHub Actions workflow files exist, but `
 - No private API keys live in this repo or in the HTML.
 - Public Sheet IDs are identifiers, not secrets.
 - This is a personal research tool, not betting advice.
+
+## October 2026 Launch QA
+
+The launch fixes retain Stats, Game Entry, multi-book pricing, and the existing Odds API cost controls. `nba_readiness.py`, `nba_sources.py`, and `nba_injuries.py` must be alongside the engine and grader, including when running in Colab. Install `requirements-nba.txt` before running.
+
+The dashboard requires a fresh `NBA_Status` sheet from the updated engine. Deploy the engine and dashboard together; until the engine publishes that status, the dashboard deliberately hides stale actionable data. Availability that cannot be verified also withholds affected picks.
+
+Workflows remain manual. Engine and grader share a concurrency group to avoid overlapping sheet writes. Live authenticated execution and injury coverage still need launch QA.
+
+Offline checks (no live sheet writes):
+
+```sh
+NBA_CACHE_DIR=/tmp/nba-qa-cache python3 -m unittest discover -s tests -q
+node tests/test_nba_dashboard.cjs
+```

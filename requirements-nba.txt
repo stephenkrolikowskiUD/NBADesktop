@@ -1,0 +1,9 @@
+pandas==3.0.1
+numpy==2.4.2
+requests==2.32.5
+pytz==2026.1.post1
+gspread==6.2.1
+google-auth==2.49.2
+google-genai==1.72.0
+nba_api==1.11.4
+pypdf==6.10.2

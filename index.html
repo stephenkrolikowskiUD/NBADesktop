@@ -355,7 +355,7 @@ const fmtOdds=v=>{if(!v&&v!==0)return"—";v=parseInt(v);return v>0?`+${v}`:`${v
 const barColor=(v,l)=>!l?"#eab308":v>l?"#22c55e":v===l?"#9ca3af":"#ef4444";
 const avgColor=(v,l)=>!l?"#eab308":v>=l?"#eab308":"#f97316";
 const esc=s=>String(s||"").replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
-function impliedProb(odds){if(!odds&&odds!==0)return null;const o=parseInt(odds);if(isNaN(o))return null;return o<0?Math.abs(o)/(Math.abs(o)+100):100/(o+100)}
+function impliedProb(odds){if(odds===null||odds===undefined||odds==="")return null;const o=Number(odds);if(!Number.isFinite(o)||Math.abs(o)<100)return null;return o<0?Math.abs(o)/(Math.abs(o)+100):100/(o+100)}
 function cleanName(v){return String(v||"").trim()}
 function normalizeDate(val){
   const s=String(val||"").trim();
@@ -408,10 +408,17 @@ function getSampleFlags(name){
     gamesLast7d:toNum(row.GAMES_LAST_7D??row.games_last_7d)
   };
 }
+function playerAvailability(name){
+  ensureDerived();const row=derived.tonightByName.get(normalizePlayerName(name))||{};
+  return String(row.STATUS||row.AVAILABILITY||row.INJURY_STATUS||"UNKNOWN").toUpperCase();
+}
+function bookLabel(prop){return String(prop?.BOOK||"draftkings").toLowerCase()==="fanduel"?"FanDuel":"DraftKings"}
 function riskBadges(name,{showLimited=true}={}){
   const f=getSampleFlags(name);const out=[];
   if(f.returning)out.push(`<span class="risk-badge risk-returning">⚠️ RETURNING</span>`);
   if(showLimited&&f.limited)out.push(`<span class="risk-badge risk-limited">⚠️ LIMITED SAMPLE</span>`);
+  ensureDerived();const context=derived.tonightByName.get(normalizePlayerName(name))||{};if(context.BASELINE_TYPE==="PRIOR_SEASON")out.push(`<span class="risk-badge risk-limited">PRIOR BASELINE ${esc(context.ANALYSIS_SEASON||"")}</span>`);
+  const status=playerAvailability(name);if(status!=="AVAILABLE")out.push(`<span class="risk-badge risk-returning">${esc(status)}</span>`);
   return out.join("");
 }
 
@@ -468,6 +475,7 @@ function firstValidPlayer(arr){
 }
 function normalizePlayerName(name){
   return cleanName(name)
+    .normalize("NFD").replace(/[\u0300-\u036f]/g,"")
     .toLowerCase()
     .replace(/['’`.]/g,"")
     .replace(/\b(jr|sr|ii|iii|iv)\b/g,"")
@@ -490,7 +498,8 @@ function aiAgreesWithBet(aiPick,betLikeObject){
   if(!aiPick||!betLikeObject)return false;
   return normalizePlayerName(aiPick.player||aiPick.PLAYER||aiPick.Player||aiPick.PLAYER_NAME)===normalizePlayerName(betLikeObject.name||betLikeObject.player)
     && normalizePropName(aiPick.prop_type||aiPick.stat||aiPick.metric)===normalizePropName(betLikeObject.metric||betLikeObject.prop_type||betLikeObject.stat)
-    && normalizeLeanText(aiPick.lean)===normalizeLeanText(betLikeObject.lean);
+    && normalizeLeanText(aiPick.lean)===normalizeLeanText(betLikeObject.lean)
+    && Number(aiPick.line)===Number(betLikeObject.dkLine??betLikeObject.line);
 }
 function easternTodayISO(){
   return new Date().toLocaleDateString('en-CA',{timeZone:'America/New_York'});
@@ -516,16 +525,40 @@ function renderPickGuard(guard){
 
 const fetchSheet=n=>new Promise((res,rej)=>{
   const url=`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&headers=1&sheet=${encodeURIComponent(n)}&cacheBust=${Date.now()}`;
-  fetch(url,{cache:"no-store"}).then(r=>{
+  fetch(url,{cache:"no-store",signal:AbortSignal.timeout(20000)}).then(r=>{
     if(!r.ok){console.error(`❌ Sheet fetch failed: ${n} (${r.status})`);throw new Error(`Failed: ${n}`)}
     return r.text()
   }).then(t=>{
+    if(/^\s*</.test(t))throw new Error(`Invalid CSV response: ${n}`);
     Papa.parse(t,{header:true,skipEmptyLines:true,dynamicTyping:true,complete:r=>{
       console.log(`✅ ${n}: ${r.data.length} rows, cols: ${r.meta.fields?.slice(0,5).join(', ')}...`);
+      if(r.errors?.length){rej(new Error(`Invalid CSV: ${n}`));return}
       res(r.data);
     },error:rej});
   }).catch(rej)
 });
+
+function seasonForDate(date){
+  const y=Number(date.slice(0,4)),m=Number(date.slice(5,7));
+  const start=m>=9?y:y-1;
+  return `${start}-${String(start+1).slice(-2)}`;
+}
+function rowIsCurrent(row,today=easternTodayISO()){
+  return String(row.SLATE_DATE||"")===today;
+}
+function evaluateFeed(rows,now=Date.now(),today=easternTodayISO()){
+  const status=rows?.[0];
+  if(!status||!rowIsCurrent(status,today))return {usable:false,text:"NBA feed is awaiting today's verified update. Previous slate hidden."};
+  // Engine publishes Eastern timestamps with an explicit zone abbreviation.
+  const stamp=Date.parse(String(status.LAST_UPDATED||""));
+  if(!Number.isFinite(stamp)||now-stamp>4*60*60*1000||stamp>now+5*60*1000)
+    return {usable:false,text:"NBA feed is stale. Refresh after the next engine update."};
+  if(status.STATUS==="NO_GAMES")return {usable:false,text:`No NBA games scheduled for ${today}.`};
+  if(status.STATUS==="WARMUP")return {usable:false,text:"Current-season player history is still building. Picks will appear after verified data is available."};
+  if(!["READY","AWAITING_PROPS","DEGRADED"].includes(status.STATUS))return {usable:false,text:"NBA data is updating. Refresh shortly."};
+  if(status.STATUS==="DEGRADED")return {usable:true,text:"Slate updated with limited data: "+(status.WARNINGS||"a supporting feed is unavailable.")};
+  return {usable:true,text:status.STATUS==="AWAITING_PROPS"?"Today's slate is loaded; waiting for player markets.":"Today's NBA feed is current."};
+}
 
 function hasLogs(name){ensureDerived();return (derived.logsByName.get(normalizePlayerName(name))||[]).length>0}
 
@@ -540,7 +573,7 @@ function getPlayerLogs(name){
 
 // ═══ +EV ENGINE ═══
 function getHitRate(name,metric,line){
-  const logs=getPlayerLogs(name);if(logs.length<3)return null;
+  const logs=getPlayerLogs(name);if(logs.length<5)return null;
   const ln=parseFloat(line);if(isNaN(ln))return null;
   let over=0,under=0,push=0;
   for(const g of logs){
@@ -561,17 +594,18 @@ function getHitRate(name,metric,line){
 }
 function getBestBets(){
   return getMemo("bestBets",()=>{if(!st.props.length||!st.playerStats.length)return[];const bets=[];const tSet=new Set(st.tonight.map(p=>normalizePlayerName(p.PLAYER_NAME)).filter(Boolean));
-  for(const p of st.props){const name=cleanName(p.PLAYER_NAME),nameKey=normalizePlayerName(p.PLAYER_NAME);if(!name||!nameKey||!tSet.has(nameKey))continue;const metric=p.METRIC;const line=parseFloat(p.DK_LINE);if(isNaN(line))continue;
+  for(const p of st.props){const name=cleanName(p.PLAYER_NAME),nameKey=normalizePlayerName(p.PLAYER_NAME);if(!name||!nameKey||!tSet.has(nameKey)||playerAvailability(name)!=="AVAILABLE")continue;const metric=p.METRIC;const line=parseFloat(p.DK_LINE);if(isNaN(line))continue;
     const MIN_LINES={STL:1.5,BLK:1.5,AST:2.5,TOV:1.5};if(MIN_LINES[metric]&&line<MIN_LINES[metric])continue;
     if(metric==="STL"||metric==="BLK")continue;
     const overO=parseInt(p.OVER_ODDS),underO=parseInt(p.UNDER_ODDS);if(isNaN(overO)&&isNaN(underO))continue;
-    const hr=getHitRate(name,metric,line);if(!hr||hr.total<3||!hr.nonPush)continue;
+    const hr=getHitRate(name,metric,line);if(!hr||hr.total<5||!hr.nonPush)continue;
     const oIP=impliedProb(overO),uIP=impliedProb(underO);let oE=null,uE=null;if(oIP!==null)oE=hr.overRate-oIP;if(uIP!==null)uE=hr.underRate-uIP;
     let lean,edge,odds,ip,hitRate;
     if(oE!==null&&uE!==null){if(oE>=uE){lean="OVER";edge=oE;odds=overO;ip=oIP;hitRate=hr.overRate}else{lean="UNDER";edge=uE;odds=underO;ip=uIP;hitRate=hr.underRate}}
     else if(oE!==null){lean="OVER";edge=oE;odds=overO;ip=oIP;hitRate=hr.overRate}else{lean="UNDER";edge=uE;odds=underO;ip=uIP;hitRate=hr.underRate}
     if(edge===null)continue;const pT=derived.tonightByName.get(nameKey)||{};const flags=getSampleFlags(name);const spread=Math.abs(toNum(pT.SPREAD));const gameTotal=toNum(pT.GAME_TOTAL);const gameKey=[pT.TEAM_ABBREVIATION||"",pT.TONIGHT_OPP||""].sort().join("|");
-    bets.push({name,metric,line,lean,edge,odds,impliedProb:ip,hitRate,hits:lean==="OVER"?hr.over:hr.under,total:hr.nonPush,team:pT.TEAM_ABBREVIATION||"",opp:pT.TONIGHT_OPP||"",dkLine:p.DK_LINE,overOdds:p.OVER_ODDS,underOdds:p.UNDER_ODDS,prop:p,returning:flags.returning,limitedSample:flags.limited,spread,gameTotal,gameKey,blowoutRisk:spread>10});
+    const priorBaseline=pT.BASELINE_TYPE==="PRIOR_SEASON";edge*=priorBaseline?.35:flags.returning?.5:1;
+    bets.push({book:p.BOOK||"draftkings",name,metric,line,lean,edge,odds,impliedProb:ip,hitRate,hits:lean==="OVER"?hr.over:hr.under,total:hr.nonPush,team:pT.TEAM_ABBREVIATION||"",opp:pT.TONIGHT_OPP||"",dkLine:p.DK_LINE,overOdds:p.OVER_ODDS,underOdds:p.UNDER_ODDS,prop:p,returning:flags.returning,limitedSample:flags.limited,spread,gameTotal,gameKey,blowoutRisk:spread>10});
   }bets.sort((a,b)=>(a.returning===b.returning?b.edge-a.edge:(a.returning?1:-1)));return bets;});
 }
 
@@ -774,38 +808,31 @@ function heaterToDash(name){
 }
 
 function getConvergenceBoard(){
-  return getMemo("convergenceBoard",()=>{if(!st.aiPicks.length)return[];
-  const board=new Map();
-  const allowed=new Set(st.aiPicks.map(p=>normalizePlayerName(p.player||p.PLAYER||p.Player||p.PLAYER_NAME)).filter(Boolean));
-  const bestBetMap=new Map();
-  const add=(name,source,boost=0,meta={})=>{
-    if(!name)return;
-    const key=normalizePlayerName(name);
-    if(allowed.size && !allowed.has(key))return;
-    if(!board.has(key))board.set(key,{name,sources:new Set(),score:0,team:meta.team||"",opp:meta.opp||"",detail:""});
-    const row=board.get(key);
-    row.sources.add(source);
-    row.score+=boost;
-    if(!row.team&&meta.team)row.team=meta.team;
-    if(!row.opp&&meta.opp)row.opp=meta.opp;
-    if(!row.detail&&meta.detail)row.detail=meta.detail;
-  };
-  getBestBets().filter(b=>b.edge>0).slice(0,20).forEach(b=>{
-    const key=normalizePlayerName(b.name);
-    if(!bestBetMap.has(key))bestBetMap.set(key,b);
-    add(b.name,"Best Bets",2+Math.min(b.edge*20,3),{team:b.team,opp:b.opp,detail:`${b.lean} ${b.metric} ${b.dkLine}`});
+  return getMemo("convergenceBoard",()=>{
+    const board=new Map();
+    const latestRun=Math.max(0,...st.aiPicks.map(p=>toNum(p.RUN_NUMBER)));
+    const latestPicks=st.aiPicks.filter(p=>normalizeDate(p.DATE)===easternTodayISO()&&(!latestRun||toNum(p.RUN_NUMBER)===latestRun));
+    const allowed=new Set(latestPicks.map(p=>normalizePlayerName(p.player)).filter(Boolean));
+    const tonight=new Map(st.tonight.map(p=>[normalizePlayerName(p.PLAYER_NAME),p]));
+    const add=(name,source,boost=0,meta={})=>{
+      const key=normalizePlayerName(name);const player=tonight.get(key);
+      if(!key||!player||(allowed.size&&!allowed.has(key))||getLockInfo(name).started)return;
+      if(playerAvailability(name)!=="AVAILABLE")return;
+      if(!board.has(key))board.set(key,{name:player.PLAYER_NAME,sources:new Set(),boosts:new Map(),team:meta.team||player.CURRENT_TEAM||player.TEAM_ABBREVIATION||"",opp:meta.opp||player.TONIGHT_OPP||"",detail:""});
+      const row=board.get(key);row.sources.add(source);
+      row.boosts.set(source,Math.max(row.boosts.get(source)||0,boost));
+      if(!row.detail&&meta.detail)row.detail=meta.detail;
+    };
+    const bets=new Map();
+    getBestBets().filter(b=>b.edge>0).slice(0,20).forEach(b=>{const key=normalizePlayerName(b.name);if(!bets.has(key))bets.set(key,[]);bets.get(key).push(b);add(b.name,"Best Bets",2+Math.min(b.edge*20,3),{team:b.team,opp:b.opp,detail:`${b.lean} ${b.metric} ${b.dkLine}`})});
+    latestPicks.forEach(p=>{const bet=(bets.get(normalizePlayerName(p.player))||[]).find(b=>aiAgreesWithBet(p,b));if(!bet)return;
+      const conf=normalizeConfidence(p.confidence);add(p.player,"AI",conf==="SMASH"?4:conf==="STRONG"?3:2,{detail:`${p.lean} ${p.prop_type} ${p.line}`});});
+    getStreaks().slice(0,20).forEach(p=>add(p.player,"Streaks",p.streak>=7?3:p.streak>=5?2.5:2,{team:p.team,opp:p.opp,detail:`${p.streak}G ${p.stat}`}));
+    getDueBoard().slice(0,20).forEach(p=>add(p.name,"Due",1.5+Math.min((p.totalScore||0)/12,2),{team:p.team,opp:p.opp,detail:`Due ${p.stat}`}));
+    getHeaters().slice(0,15).forEach(p=>add(p.name,"Heaters",1.5+(p.hitRate3||0)*2,{team:p.team,opp:p.opp,detail:`${(p.hitRate3*100).toFixed(0)}% on 3+ 3PM`}));
+    return [...board.values()].map(p=>({...p,sourceCount:p.sources.size,sourceList:[...p.sources],score:[...p.boosts.values()].reduce((a,b)=>a+b,0)}))
+      .filter(p=>p.sourceCount>=2).sort((a,b)=>b.sourceCount-a.sourceCount||b.score-a.score).slice(0,5);
   });
-  st.aiPicks.forEach(pk=>{
-    const key=normalizePlayerName(pk.player||pk.PLAYER||pk.Player||pk.PLAYER_NAME);
-    const bestBet=bestBetMap.get(key);
-    if(!bestBet || !aiAgreesWithBet(pk,bestBet))return;
-    const conf=normalizeConfidence(pk.confidence);
-    add(pk.player||pk.PLAYER||pk.Player||pk.PLAYER_NAME,"AI",conf==="SMASH"?4:conf==="STRONG"?3:2,{detail:`${pk.lean||""} ${pk.prop_type||""} ${pk.line||""}`.trim()});
-  });
-  getStreaks().slice(0,20).forEach(s=>add(s.player,"Streaks",s.streak>=7?3:s.streak>=5?2.5:2,{team:s.team,opp:s.opp,detail:`${s.streak}G ${s.stat}`}));
-  getDueBoard().slice(0,20).forEach(d=>add(d.name,"Due",1.5+Math.min((d.totalScore||0)/12,2),{team:d.team,opp:d.opp,detail:`Due ${d.stat}`}));
-  getHeaters().slice(0,15).forEach(h=>add(h.name,"Heaters",1.5+(h.hitRate3||0)*2,{team:h.team,opp:h.opp,detail:`${(h.hitRate3*100).toFixed(0)}% on 3+ 3PM`}));
-  return [...board.values()].map(r=>({...r,sourceCount:r.sources.size,sourceList:[...r.sources]})).filter(r=>r.sourceCount>=2).sort((a,b)=>b.sourceCount-a.sourceCount||b.score-a.score).slice(0,5);});
 }
 
 function renderConvergenceHTML(){
@@ -1042,7 +1069,8 @@ function render(){
   const lastUp=most.LAST_UPDATED||pT.LAST_UPDATED||"—";
 
   // Early season banner (ported from MLB)
-  const earlyBanner=!pHasLogs&&player?`<div class="early-banner"><div class="icon">🌱</div><div class="msg">Early Season — No Game Logs Yet</div><div class="sub">${esc(player)} is on the active roster. Matchup info, props, and AI picks are available.</div></div>`:"";
+  const priorBanner=pT.BASELINE_TYPE==="PRIOR_SEASON"?`<div class="early-banner"><div class="icon">🌱</div><div class="msg">Prior-season baseline · ${esc(pT.ANALYSIS_SEASON)}</div><div class="sub">${esc(player)} has no current-season game logs yet. Charts and averages below are from last season; current team and matchup are updated.</div></div>`:"";
+  const earlyBanner=priorBanner||(!pHasLogs&&player?`<div class="early-banner"><div class="icon">🌱</div><div class="msg">Early Season — No Game Logs Yet</div><div class="sub">${esc(player)} is on the active roster. Matchup info and available props are shown; no game averages are invented.</div></div>`:"");
 
   // Pick banner for dash
   const dashPick=aiPicks.find(pk=>normalizePlayerName(pk.player||pk.PLAYER||pk.Player||pk.PLAYER_NAME)===playerKey);
@@ -1051,7 +1079,7 @@ function render(){
   // Dash props
   const dashProps=props.filter(p=>normalizePlayerName(p.PLAYER_NAME)===playerKey);
   let dashPropsHTML="";
-  if(dashProps.length){dashPropsHTML=`<div class="section"><div class="label">🎲 DK Props</div>${dashProps.map(p=>`<div style="padding:6px 0;border-bottom:1px solid #222"><div style="display:flex;justify-content:space-between;gap:10px"><span><span class="prop-metric-tag" style="margin-right:6px">${p.METRIC}</span><strong>${p.DK_LINE}</strong></span><span><span style="color:#22c55e;font-size:11px;font-weight:600">O ${fmtOdds(p.OVER_ODDS)}</span> <span style="color:#ef4444;font-size:11px;font-weight:600;margin-left:8px">U ${fmtOdds(p.UNDER_ODDS)}</span></span></div>${renderPropBestBookBlock(p)}</div>`).join("")}</div>`}
+  if(dashProps.length){dashPropsHTML=`<div class="section"><div class="label">🎲 Player Props</div>${dashProps.map(p=>`<div style="padding:6px 0;border-bottom:1px solid #222"><div style="display:flex;justify-content:space-between;gap:10px"><span><span class="prop-metric-tag" style="margin-right:6px">${p.METRIC}</span><strong>${p.DK_LINE}</strong></span><span><span style="color:#22c55e;font-size:11px;font-weight:600">O ${fmtOdds(p.OVER_ODDS)}</span> <span style="color:#ef4444;font-size:11px;font-weight:600;margin-left:8px">U ${fmtOdds(p.UNDER_ODDS)}</span></span></div>${renderPropBestBookBlock(p)}</div>`).join("")}</div>`}
   // Game log
   let logHTML="";
   if(activeTab==="gamelog"){
@@ -1085,9 +1113,9 @@ function render(){
       const allBets=getBestBets();const posEV=allBets.filter(b=>b.edge>0);const elite=posEV.filter(b=>b.edge>=0.15);const strong=posEV.filter(b=>b.edge>=0.08&&b.edge<0.15);
       picksHTML=picksIntro;if(!allBets.length)picksHTML+=`<div class="no-data" style="padding:40px;text-align:center">No props for +EV analysis. Run engine with DK props.</div>`;
       else{picksHTML+=`<div class="bet-summary"><div class="bs-card"><div class="bs-val">${posEV.length}</div><div class="bs-lbl">+EV PROPS</div></div><div class="bs-card"><div class="bs-val" style="color:#ef4444">${elite.length}</div><div class="bs-lbl">ELITE (15%+)</div></div><div class="bs-card"><div class="bs-val" style="color:#eab308">${strong.length}</div><div class="bs-lbl">STRONG (8%+)</div></div><div class="bs-card"><div class="bs-val" style="color:#9ca3af">${allBets.length}</div><div class="bs-lbl">ANALYZED</div></div></div>`;
-        picksHTML+=`<div style="padding:0 16px 4px;color:#9ca3af;font-size:10px">Edge = hit rate − DK implied probability. Min 3 games.</div><div class="cards-grid">`;
+        picksHTML+=`<div style="padding:0 16px 4px;color:#9ca3af;font-size:10px">Edge = hit rate − quoted-book implied probability. Min 5 games.</div><div class="cards-grid">`;
         picksHTML+=posEV.slice(0,40).map(b=>{const ep=(b.edge*100).toFixed(1),hr=(b.hitRate*100).toFixed(0),ip=(b.impliedProb*100).toFixed(0);const cls=b.edge>=0.15?"elite":b.edge>=0.08?"strong":"mid";const badges=riskBadges(b.name,{showLimited:false});
-          const locked=getLockInfo(b.name).started;return`<div class="bet-card ${cls}${locked?" locked-card":""}" style="cursor:pointer;border-color:${b.lean==="OVER"?"#22c55e":"#ef4444"}" onclick="st.player='${esc(b.name)}';st.metric='${b.metric}';st.line='${b.dkLine}';cache.player=null;switchTab('dashboard')"><div class="bet-left"><div class="bet-name">${playerLink(b.name,b.metric,b.dkLine)}${badges}${lockBadge(b.name)}</div><div class="bet-meta">${esc(b.team)} vs ${esc(b.opp)} · ${b.hits}/${b.total} games</div><div class="bet-prop"><span class="prop-metric-tag">${b.metric}</span><span class="${b.lean==="OVER"?"odds-over":"odds-under"}" style="font-weight:700;font-size:13px">${b.lean} ${b.dkLine}</span><span style="color:#d1d5db;font-size:11px">${fmtOdds(b.odds)}</span><span class="ev-badge ev-pos ev-big ${(b.returning||locked)?"muted-risk":""}">+${ep}% EV</span></div>${renderBestBookLine(b.prop,b.lean)}<div class="bet-bar"><div class="bet-bar-fill ${(b.returning||locked)?"muted-risk":""}" style="width:${hr}%;background:${b.edge>=0.15?"#ef4444":b.edge>=0.08?"#22c55e":"#eab308"}"></div></div><div style="display:flex;justify-content:space-between;margin-top:3px;font-size:9px;color:#9ca3af"><span>You: ${hr}%</span><span>DK: ${ip}%</span></div></div><div class="bet-right"><div class="bet-edge pos ${(b.returning||locked)?"muted-risk":""}">+${ep}%</div><div class="bet-sub">${locked?"started":b.returning?"reduced":"edge"}</div></div></div>`}).join("")+`</div>`}
+          const locked=getLockInfo(b.name).started;return`<div class="bet-card ${cls}${locked?" locked-card":""}" style="cursor:pointer;border-color:${b.lean==="OVER"?"#22c55e":"#ef4444"}" onclick="st.player='${esc(b.name)}';st.metric='${b.metric}';st.line='${b.dkLine}';cache.player=null;switchTab('dashboard')"><div class="bet-left"><div class="bet-name">${playerLink(b.name,b.metric,b.dkLine)}${badges}${lockBadge(b.name)}</div><div class="bet-meta">${esc(b.team)} vs ${esc(b.opp)} · ${b.hits}/${b.total} games</div><div class="bet-prop"><span class="prop-metric-tag">${b.metric}</span><span class="${b.lean==="OVER"?"odds-over":"odds-under"}" style="font-weight:700;font-size:13px">${b.lean} ${b.dkLine}</span><span style="color:#d1d5db;font-size:11px">${fmtOdds(b.odds)}</span><span class="ev-badge ev-pos ev-big ${(b.returning||locked)?"muted-risk":""}">+${ep}pp edge</span></div>${renderBestBookLine(b.prop,b.lean)}<div class="bet-bar"><div class="bet-bar-fill ${(b.returning||locked)?"muted-risk":""}" style="width:${hr}%;background:${b.edge>=0.15?"#ef4444":b.edge>=0.08?"#22c55e":"#eab308"}"></div></div><div style="display:flex;justify-content:space-between;margin-top:3px;font-size:9px;color:#9ca3af"><span>You: ${hr}%</span><span>DK: ${ip}%</span></div></div><div class="bet-right"><div class="bet-edge pos ${(b.returning||locked)?"muted-risk":""}">+${ep}%</div><div class="bet-sub">${locked?"started":b.returning?"reduced":"edge"}</div></div></div>`}).join("")+`</div>`}
 
     }else if(picksView==="slips"){
       const r=getSmartSlips();picksHTML=picksIntro;
@@ -1189,6 +1217,7 @@ function render(){
   // ═══ ASSEMBLE ═══
   const showH=activeTab==="dashboard"||activeTab==="gamelog";
   app.innerHTML=`
+  ${st.feedStatus?`<div role="status" class="card" style="margin:12px 16px;color:#cbd5e1">${esc(st.feedStatus.text)}</div>`:""}
   <div class="header"><div class="header-top"><div class="header-title">🏀 NBA DFS Dashboard</div><div style="display:flex;gap:8px"><button class="theme-btn" id="themeBtn">${st.theme==="light"?"🌙 Dark":"☀️ Light"}</button><button class="refresh-btn" id="refreshBtn">↻ Refresh</button></div></div>
     <div class="top-nav"><button class="tab-btn ${activeTab==="dashboard"?"active":""}" onclick="switchTab('dashboard')">📊 Dash</button><button class="tab-btn ${activeTab==="gamelog"?"active":""}" onclick="switchTab('gamelog')">📋 Log</button><button class="tab-btn ${activeTab==="picks"?"active":""}" onclick="switchTab('picks')">🔥 Picks</button><button class="tab-btn ${activeTab==="stats"?"active":""}" onclick="switchTab('stats')">📊 Stats</button><button class="tab-btn ${activeTab==="entry"?"active":""}" onclick="switchTab('entry')">🎟️ Game Entry</button><button class="tab-btn ${activeTab==="method"?"active":""}" onclick="switchTab('method')">ℹ️ Info</button></div>
     ${showH?`<div class="header-controls">
@@ -1210,7 +1239,7 @@ function render(){
     ${pHasLogs?`<div class="section"><div class="label">Averages</div><div class="avg-cards">${avgs}</div></div>`:""}
     ${pHasLogs?`<div class="section"><div class="split-row"><div class="split-card"><span class="split-title">H2H vs ${esc(pT.TONIGHT_OPP||"—")}</span><div class="mini-bars-container">${h2hBars}</div></div><div class="split-card"><span class="split-title">Home / Away</span><div class="mini-bars-container">${hrBars}</div></div></div></div>`:""}
     <div class="section"><div class="card"><div class="card-title">⚡ Vegas</div><div class="vegas-row"><span class="vegas-key">${esc(pT.TEAM_ABBREVIATION||"—")} vs ${esc(pT.TONIGHT_OPP||"—")}</span><span style="color:#22c55e;font-size:12px;font-weight:600">${pT.SPREAD?`Spread: ${pT.SPREAD}`:"—"}</span></div><div class="vegas-row"><span class="vegas-key">Team Total</span><span class="vegas-val">${pT.IMPLIED_TOTAL||"—"}</span></div><div class="vegas-row"><span class="vegas-key">Opp Total</span><span class="vegas-val">${pT.OPP_IMPLIED_TOTAL||"—"}</span></div><div class="vegas-row"><span class="vegas-key">Game Total</span><span class="vegas-val">${pT.GAME_TOTAL||"—"}</span></div></div></div>
-    <div class="section"><div class="card"><div class="card-title">🎰 DK Props — ${metric}</div>
+    <div class="section"><div class="card"><div class="card-title">🎰 ${bookLabel(prop)} Props — ${metric}</div>
       ${prop.DK_LINE?`<div class="dk-line">Line: ${prop.DK_LINE}</div><div class="dk-odds"><span style="color:#22c55e;font-size:12px">${overOdds?`Over: ${fmtOdds(overOdds)} (${(overImpl*100).toFixed(1)}%)`:"—"}</span><span style="color:#ef4444;font-size:12px">${underOdds?`Under: ${fmtOdds(underOdds)}`:"—"}</span></div>`:`<div class="no-data" style="margin-bottom:8px">No DK line</div>`}
       ${lineNum&&pHasLogs?`<div class="hit-row" style="border-top:1px solid #333;padding-top:8px;margin-top:4px"><span class="hit-key">L5</span><span class="hit-val">${hL5}/5</span></div><div class="hit-row"><span class="hit-key">L10</span><span class="hit-val">${hL10}/10</span></div><div class="hit-row"><span class="hit-key">Season</span><span class="hit-val">${hS}/${allLogs.length} (${sRate!==null?(sRate*100).toFixed(0):"—"}%)${pushS>0?` · ${pushS} push`:""}</span></div>`:""}</div></div>
     ${edge!==null&&edge>0?`<div class="section dash-full"><div class="confidence" style="background:#22c55e22;border:2px solid #22c55e"><div class="conf-label" style="color:#22c55e">+${(edge*100).toFixed(1)}% Edge vs Book</div><div class="conf-edge">Hit rate: ${(sRate*100).toFixed(0)}% · DK implied: ${(overImpl*100).toFixed(0)}%</div></div></div>`:""}
@@ -1230,8 +1259,8 @@ function render(){
       <div class="card" style="margin-bottom:10px"><div class="card-title">⚙️ Calculations</div><div style="font-size:12px;color:#d1d5db;line-height:1.6"><span style="color:#eab308;font-weight:700">Rolling Averages</span> L3/L5/L10/Season · <span style="color:#eab308;font-weight:700">H2H</span> vs opponent · <span style="color:#eab308;font-weight:700">Splits</span> Home/Away · <span style="color:#eab308;font-weight:700">Correlations</span> 2000+ pairs · <span style="color:#eab308;font-weight:700">EV%</span> hit rate vs implied odds · <span style="color:#eab308;font-weight:700">Line Movement</span> snapshot diffs</div></div>
       <div class="card" style="margin-bottom:10px"><div class="card-title">🤖 AI Picks — Gemini</div><div style="font-size:12px;color:#d1d5db;line-height:1.6">Gemini 2.5 Flash Lite receives 80 players with stats + DK lines. 3-layer injury filter. Returns 14 ranked picks with SMASH/OVER/FADE.</div></div>
       <div class="card" style="margin-bottom:10px"><div class="card-title">💰 Best Bets & 🎫 Slips</div><div style="font-size:12px;color:#d1d5db;line-height:1.6">EV engine compares hit rates to implied odds. Slips combine EV + AI + streaks into conviction-scored parlays.</div></div>
-      <div class="card" style="margin-bottom:10px"><div class="card-title">🧊 They're Due</div><div style="font-size:12px;color:#d1d5db;line-height:1.6">Finds cold players with strong season averages and favorable matchups tonight. Regression to the mean + soft defense = buy low.</div></div>
-      <div class="card" style="margin-bottom:10px"><div class="card-title">📖 Abbreviations</div><div style="font-size:12px;color:#d1d5db;line-height:1.7">PTS — Points · REB — Rebounds · AST — Assists · STL — Steals · BLK — Blocks<br>PRA — Points + Rebounds + Assists · PR — Points + Rebounds · PA — Points + Assists · RA — Rebounds + Assists<br>FG3M — Three-Pointers Made · STOCKS — Steals + Blocks · TOV — Turnovers<br>MIN — Minutes · DD — Double-Double · FPPM — Fantasy Points Per Minute<br>DK_FP — DraftKings Fantasy Points · UD_FP — Underdog Fantasy Points<br>EV% — Expected Value (hit rate minus implied odds)<br>SMASH — Highest conviction pick · STRONG — High confidence · LEAN — Moderate confidence<br>L3/L5/L10 — Last 3/5/10 game averages · Seas — Season average<br>H2H — Head-to-Head history vs tonight's opponent<br>DEF_RTG — Defensive Rating (points allowed per 100 possessions) · PACE — Possessions per game</div></div>
+      <div class="card" style="margin-bottom:10px"><div class="card-title">🧊 They're Due</div><div style="font-size:12px;color:#d1d5db;line-height:1.6">Finds cold players with strong season averages and favorable matchups tonight. These are descriptive trends; a rebound is not guaranteed.</div></div>
+      <div class="card" style="margin-bottom:10px"><div class="card-title">📖 Abbreviations</div><div style="font-size:12px;color:#d1d5db;line-height:1.7">PTS — Points · REB — Rebounds · AST — Assists · STL — Steals · BLK — Blocks<br>PRA — Points + Rebounds + Assists · PR — Points + Rebounds · PA — Points + Assists · RA — Rebounds + Assists<br>FG3M — Three-Pointers Made · STOCKS — Steals + Blocks · TOV — Turnovers<br>MIN — Minutes · DD — Double-Double · FPPM — Fantasy Points Per Minute<br>DK_FP — DraftKings Fantasy Points · UD_FP — Underdog Fantasy Points<br>Edge — Historical hit rate minus implied probability, in percentage points<br>SMASH — Highest conviction pick · STRONG — High confidence · LEAN — Moderate confidence<br>L3/L5/L10 — Last 3/5/10 game averages · Seas — Season average<br>H2H — Head-to-Head history vs tonight's opponent<br>DEF_RTG — Defensive Rating (points allowed per 100 possessions) · PACE — Possessions per game</div></div>
       <div class="card" style="margin-bottom:10px;border:1px solid #333"><div class="card-title">🙏 Credits</div><div style="font-size:12px;color:#d1d5db;line-height:1.6"><div>Built by <span style="color:#eab308;font-weight:700">Stephen Krolikowski</span></div><div>AI: <span style="color:#eab308;font-weight:700">Gemini 2.5 Flash Lite</span> · App: <span style="color:#eab308;font-weight:700">Claude</span> by Anthropic</div><div>Engine + dashboard fixes with <span style="color:#eab308;font-weight:700">Codex</span> by OpenAI</div><div>Props: <span style="color:#eab308;font-weight:700">The Odds API</span> · Data: <span style="color:#eab308;font-weight:700">nba_api</span></div></div></div>
       <div style="text-align:center;color:#555;font-size:9px;padding:8px 0 20px">For entertainment & research purposes only.</div>
     </div>
@@ -1254,15 +1283,23 @@ function render(){
 
 function loadAllData(){
   st.loading=true;st.error=null;cache.player=null;cache.sortedLogs=null;resetDerived();render();
-  Promise.all([fetchSheet("Tonights_Opponent").catch(()=>null),fetchSheet("Player_Stats").catch(()=>null),fetchSheet("DK_Player_Props").catch(()=>[]),fetchSheet("Home_Away_Splits").catch(()=>[]),fetchSheet("Daily_Picks").catch(()=>[]),fetchSheet("Teammate_Correlations").catch(()=>[]),fetchSheet("Pick_Performance").catch(()=>[]),fetchSheet("Pick_Performance_Snapshots").catch(()=>[])])
-  .then(([tonight,stats,props,splits,picks,correlations,pickPerformance,pickPerformanceSnaps])=>{
+  return Promise.all([fetchSheet("Tonights_Opponent").catch(()=>null),fetchSheet("Player_Stats").catch(()=>null),fetchSheet("DK_Player_Props").catch(()=>[]),fetchSheet("Home_Away_Splits").catch(()=>[]),fetchSheet("Daily_Picks").catch(()=>[]),fetchSheet("Teammate_Correlations").catch(()=>[]),fetchSheet("NBA_Status").catch(()=>[]),fetchSheet("Pick_Performance").catch(()=>[]),fetchSheet("Pick_Performance_Snapshots").catch(()=>[])])
+  .then(async ([tonight,stats,props,splits,picks,correlations,status,pickPerformance,pickPerformanceSnaps])=>{
+    const after=await fetchSheet("NBA_Status").catch(()=>[]);
+    const run=status?.[0]?.RUN_ID;
+    if(run&&(after?.[0]?.RUN_ID!==run||after[0].STATUS==="UPDATING"))throw new Error("Engine update changed during load");
+    if(run&&[tonight,stats,props,splits,correlations].some(rows=>(rows||[]).some(r=>r.RUN_ID!==run)))throw new Error("Mixed engine snapshots");
     if(!tonight||!stats){st.error="Could not load critical sheets.";st.loading=false;render();return}
     // Apply data cleaning (ported from MLB)
-    st.tonight=normalizeKeys(cleanRows(tonight));
-    st.playerStats=normalizeKeys(cleanRows(stats));
-    st.props=normalizeKeys(cleanRows(props||[]));
-    st.splits=normalizeKeys(cleanRows(splits||[]));
-    st.correlations=normalizeKeys(cleanRows(correlations||[]));
+    const today=easternTodayISO();
+    const season=seasonForDate(today);
+    st.feedStatus=evaluateFeed(normalizeKeys(cleanRows(status)));
+    st.tonight=st.feedStatus.usable?normalizeKeys(cleanRows(tonight)).filter(r=>rowIsCurrent(r)):[];
+    const analysisSeasons=new Map(st.tonight.map(r=>[normalizePlayerName(r.PLAYER_NAME),r.ANALYSIS_SEASON||season]));
+    st.playerStats=normalizeKeys(cleanRows(stats)).filter(r=>(r.SEASON||seasonForDate(normalizeDate(r.GAME_DATE)))===(analysisSeasons.get(normalizePlayerName(r.PLAYER_NAME))||season));
+    st.props=st.feedStatus.usable?normalizeKeys(cleanRows(props||[])).filter(r=>rowIsCurrent(r)):[];
+    st.splits=st.feedStatus.usable?normalizeKeys(cleanRows(splits||[])).filter(r=>rowIsCurrent(r)):[];
+    st.correlations=st.feedStatus.usable?normalizeKeys(cleanRows(correlations||[])).filter(r=>rowIsCurrent(r)):[];
     st.pickPerformance=normalizeKeys(cleanRows(pickPerformance||[]));
     st.pickPerformanceSnaps=normalizeKeys(cleanRows(pickPerformanceSnaps||[]));
     const cleanPicks=normalizeKeys(cleanRows(picks||[])).map(p=>({
@@ -1276,15 +1313,15 @@ function loadAllData(){
       __normDate: normalizeDate(p.DATE||p.date||p.Date)
     }));
     const tonightNames=new Set(st.tonight.map(p=>normalizePlayerName(p.PLAYER_NAME)).filter(Boolean));
-    const allDates=[...new Set(cleanPicks.map(p=>p.__normDate).filter(Boolean))].sort();
-    let latestDate="";
-    for(let i=allDates.length-1;i>=0;i--){
-      const d=allDates[i];
-      const overlap=cleanPicks.filter(p=>p.__normDate===d).filter(p=>tonightNames.has(normalizePlayerName(p.__pickPlayer))).length;
-      if(overlap>0){latestDate=d;break}
-    }
-	    const datePicks=(latestDate?cleanPicks.filter(p=>p.__normDate===latestDate):[]).filter(p=>tonightNames.has(normalizePlayerName(p.__pickPlayer))).sort((a,b)=>toNum(a.rank)-toNum(b.rank));
-	    const seen=new Set();st.aiPicks=datePicks.filter(p=>{const k=normalizePlayerName(p.__pickPlayer);if(!k||seen.has(k))return false;seen.add(k);return true}).map(({__pickPlayer,__normDate,...rest})=>rest);
+    const latestDate=today;
+    const clearedNames=new Set(st.tonight.filter(p=>String(p.STATUS||p.AVAILABILITY||"UNKNOWN").toUpperCase()==="AVAILABLE").map(p=>normalizePlayerName(p.PLAYER_NAME)));
+    const datePicks=cleanPicks.filter(p=>p.__normDate===today&&tonightNames.has(normalizePlayerName(p.__pickPlayer))&&clearedNames.has(normalizePlayerName(p.__pickPlayer))).sort((a,b)=>toNum(a.rank)-toNum(b.rank));
+    const seen=new Set();
+    st.aiPicks=datePicks.filter(p=>{
+      const key=[normalizePlayerName(p.__pickPlayer),p.prop_type,p.lean,p.line].join('|');
+      if(!p.__pickPlayer||seen.has(key))return false;
+      seen.add(key);return true;
+    }).map(({__pickPlayer,__normDate,...rest})=>rest);
 	    const DASHBOARD_EXPECTS = {
 	      Tonights_Opponent: ['PLAYER_NAME', 'TEAM_ABBREVIATION', 'TONIGHT_OPP',
 	                          'RETURNING', 'LIMITED_SAMPLE', 'L5_GAMES_PLAYED', 'GAMES_LAST_7D'],
@@ -1315,6 +1352,7 @@ function loadAllData(){
     st.pickGuard=getPickGuard(latestDate,st.aiPicks.length);
     st.loading=false;st.loadedAt=new Date().toLocaleTimeString();
     // Use robust player finder (ported from MLB)
+    if(!st.tonight.length)st.player="";
     if(st.tonight.length>0&&!st.player){
       st.player=firstValidPlayer(st.tonight);
       const p=st.props.find(pr=>normalizePlayerName(pr.PLAYER_NAME)===normalizePlayerName(st.player)&&normalizePropName(pr.METRIC)===normalizePropName(st.metric));
@@ -1325,7 +1363,7 @@ function loadAllData(){
     console.log(`   Picks: ${st.aiPicks.length}, Splits: ${st.splits.length}, Corr: ${st.correlations.length}`);
     if(st.pickGuard)console.warn(`⚠️ ${st.pickGuard.text}`);
     if(st.tonight.length>0)console.log(`   Row 0 keys:`,Object.keys(st.tonight[0]).slice(0,8));
-    if(!st.player)console.error(`❌ NO DEFAULT PLAYER FOUND. Row 0:`,JSON.stringify(st.tonight[0]).slice(0,200));
+    if(!st.player&&st.tonight.length)console.error(`❌ NO DEFAULT PLAYER FOUND. Row 0:`,JSON.stringify(st.tonight[0]).slice(0,200));
     st.streaks=getStreaks();render();
   }).catch(err=>{
     console.error("❌ Load failed:",err);
@@ -1333,6 +1371,7 @@ function loadAllData(){
   });
 }
 loadAllData();
+setInterval(()=>loadAllData(),5*60*1000);
 </script>
 </body>
 </html>
