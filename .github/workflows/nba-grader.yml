@@ -12,6 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
+      NBA_SHEET_ID: ${{ vars.NBA_SHEET_ID }}
+      NBA_BACKUP_DIR: nba_backups
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
     steps:
       - name: Check out repo
@@ -29,3 +31,12 @@ jobs:
 
       - name: Run NBA grader
         run: python -u NBAGrader5-4.py
+
+      - name: Save Sheet backups
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nba-grader-backups-${{ github.run_id }}-${{ github.run_attempt }}
+          path: nba_backups/
+          retention-days: 7
+          if-no-files-found: ignore

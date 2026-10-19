@@ -7,32 +7,49 @@ const code=html.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/loadAllData\(\
 const app={innerHTML:''};
 let fixtures={};
 const context=vm.createContext({
+  URL,
   console:{log(){},warn(){},error(){}}, Date, AbortSignal,
   localStorage:{getItem(){return null},setItem(){}},
   document:{getElementById:id=>id==='app'?app:null,querySelectorAll:()=>[],body:{classList:{toggle(){}}}},
-  fetch:async url=>({ok:true,text:async()=>JSON.stringify(fixtures[new URL(url).searchParams.get('sheet')]||[])}),
+  fetch:async url=>{
+    const sheet=new URL(url).searchParams.get('sheet');
+    if((fixtures.__failSheets||[]).includes(sheet))throw new Error('Fixture network failure');
+    return {ok:true,text:async()=>JSON.stringify(fixtures[sheet]||[])};
+  },
   Papa:{parse:(text,options)=>options.complete({data:JSON.parse(text),errors:[],meta:{fields:[]}})},
 });
-vm.runInContext(code+'\nglobalThis.api={evaluateFeed,loadAllData,getState:()=>st,easternTodayISO,seasonForDate,normalizePlayerName,getConvergenceBoard,aiAgreesWithBet};',context);
+vm.runInContext(code+'\nglobalThis.api={evaluateFeed,loadAllData,getState:()=>st,easternTodayISO,seasonForDate,normalizePlayerName,getConvergenceBoard,aiAgreesWithBet,buildCandidatePool,entryFindProp,playerAvailability,getBestBets,scoreCandidate,currentPerformanceRows,performanceTabName};',context);
 const api=context.api;
 const today=api.easternTodayISO();
-const stamp=new Date().toString();
-const base={SLATE_DATE:today,SEASON:api.seasonForDate(today),LAST_UPDATED:stamp};
+const stamp=new Date().toISOString();
+const base={SLATE_DATE:today,SEASON:api.seasonForDate(today),LAST_UPDATED:'2026-10-19 11:00:00 AM EDT',UPDATED_AT_UTC:stamp};
 const player={...base,PLAYER_NAME:'Example Player',STATUS:'AVAILABLE',TEAM_ABBREVIATION:'LAL',CURRENT_TEAM:'LAL',TONIGHT_OPP:'NYK'};
 function seed(status='READY'){
   fixtures={
     NBA_Status:[{...base,STATUS:status}],
     Tonights_Opponent:[player],
-    Player_Stats:[{...player,GAME_DATE:today,PTS:20,MIN:30},{...player,SEASON:'2025-26',GAME_DATE:'2026-04-20',PTS:99}],
+    Dashboard_Player_Stats:[{...player,GAME_DATE:today,PTS:20,MIN:30},{...player,SEASON:'2025-26',GAME_DATE:'2026-04-20',PTS:99}],
     DK_Player_Props:[{...player,METRIC:'PTS',DK_LINE:20.5,OVER_ODDS:-110}],
     Daily_Picks:[{DATE:'2026-04-20',player:player.PLAYER_NAME,prop_type:'PTS',line:20.5,lean:'OVER'}],
   };
 }
 (async()=>{
+  if(process.env.NBA_CONTRACT_FIXTURE){
+    const contract=JSON.parse(fs.readFileSync(process.env.NBA_CONTRACT_FIXTURE,'utf8'));
+    fixtures=contract.ready;await api.loadAllData();assert.equal(api.getState().error,null);
+    assert.equal(api.getState().tonight.length,1);assert.equal(api.getState().playerStats.length,1);
+    fixtures=contract.offDay;await api.loadAllData();assert.equal(api.getState().error,null);assert.equal(api.getState().tonight.length,0);
+    assert.match(app.innerHTML,/No NBA games scheduled/);
+  }
+  const legacy={SEASON:'2025-26',PERFORMANCE_POLICY:'nba-market-provenance-v1',ROI_METHOD:'EQUAL_UNIT_RECORDED_ODDS'};
+  const current={...legacy,SEASON:base.SEASON};
+  assert.equal(api.currentPerformanceRows([legacy,current]).length,1);
+  assert.equal(api.currentPerformanceRows([{...current,PERFORMANCE_POLICY:'legacy'}]).length,0);
+  assert.equal(api.scoreCandidate({ai_tier:'SMASH',prop_type:'AST'}).leg_score,api.scoreCandidate({ai_tier:'LEAN',prop_type:'REB'}).leg_score);
   assert.equal(api.normalizePlayerName('Nikola Jokić'),'nikola jokic');
   assert.equal(api.evaluateFeed([]).usable,false);
   assert.equal(api.evaluateFeed([{...base,STATUS:'READY',SLATE_DATE:'2026-01-01'}]).usable,false);
-  assert.equal(api.evaluateFeed([{...base,STATUS:'READY',LAST_UPDATED:new Date(Date.now()-5*3600000).toString()}]).usable,false);
+  assert.equal(api.evaluateFeed([{...base,STATUS:'READY',UPDATED_AT_UTC:new Date(Date.now()-5*3600000).toISOString()}]).usable,false);
   seed();await api.loadAllData();
   assert.equal(api.getState().error,null);
   assert.equal(api.getState().tonight.length,1);
@@ -47,10 +64,39 @@ function seed(status='READY'){
   assert.equal(api.getState().player,'');assert.equal(api.getState().error,null);
   seed('NO_GAMES');await api.loadAllData();assert.match(app.innerHTML,/No NBA games scheduled/);
   assert.equal(api.getState().tonight.length,0);
+  seed('NO_GAMES');fixtures.NBA_Status[0].RUN_ID='off-day-run';fixtures.Dashboard_Player_Stats[0].RUN_ID='old-run';
+  await api.loadAllData();assert.equal(api.getState().error,null);assert.match(app.innerHTML,/No NBA games scheduled/);
+  fixtures.Tonights_Opponent=[];await api.loadAllData();assert.equal(api.getState().error,null);
+  fixtures.__failSheets=['Dashboard_Player_Stats','Home_Away_Splits','Teammate_Correlations'];
+  await api.loadAllData();assert.equal(api.getState().error,null);assert.match(app.innerHTML,/No NBA games scheduled/);
+  seed();fixtures.__failSheets=['Dashboard_Player_Stats'];await api.loadAllData();
+  assert.match(api.getState().error,/Required slate feed/);assert.equal(api.getState().tonight.length,0);
+  assert.doesNotMatch(app.innerHTML,/Check Google Sheet sharing settings/);
+  assert.equal(api.evaluateFeed([{...base,STATUS:'READY',UPDATED_AT_UTC:''}]).usable,false,'locale timestamp cannot establish freshness');
   seed('WARMUP');await api.loadAllData();assert.match(app.innerHTML,/history is still building/);
   seed('UPDATING');await api.loadAllData();assert.equal(api.getState().props.length,0);
   seed();fixtures.NBA_Status[0].RUN_ID='new-run';await api.loadAllData();
   assert.notEqual(api.getState().error,null,'mixed snapshots must fail closed');
+  seed();
+  const future=new Date(Date.now()+3600000).toISOString();
+  fixtures.Tonights_Opponent[0].COMMENCE_TIME=future;
+  fixtures.Daily_Picks=[{DATE:today,player:player.PLAYER_NAME,prop_type:'PTS',line:24.5,lean:'OVER',confidence:'SMASH'}];
+  fixtures.DK_Player_Props[0].DK_LINE=25.5;fixtures.DK_Player_Props[0].OVER_ODDS=150;
+  await api.loadAllData();
+  assert.equal(api.entryFindProp(player.PLAYER_NAME,'PTS',24.5),null);
+  assert.equal(api.buildCandidatePool('LAL|NYK').candidates.some(row=>row.source==='AI'),false,'AI price cannot come from another line');
+  assert.ok(api.buildCandidatePool('LAL|NYK').candidates.length);
+  for(const status of ['OUT','UNKNOWN']){
+    fixtures.Tonights_Opponent[0].STATUS=status;await api.loadAllData();
+    assert.equal(api.buildCandidatePool('LAL|NYK').candidates.length,0,status+' must be excluded');
+  }
+  fixtures.Tonights_Opponent[0].STATUS='AVAILABLE';fixtures.Tonights_Opponent[0].MINUTES_RESTRICTED=true;
+  await api.loadAllData();assert.equal(api.getState().aiPicks.length,0);assert.equal(api.buildCandidatePool('LAL|NYK').candidates.length,0);
+  assert.equal(api.playerAvailability(player.PLAYER_NAME),'MINUTES RESTRICTED');assert.equal(api.getBestBets().length,0);
+  fixtures.Tonights_Opponent[0].MINUTES_RESTRICTED=false;fixtures.Tonights_Opponent[0].COMMENCE_TIME=new Date(Date.now()-3600000).toISOString();
+  await api.loadAllData();assert.equal(api.buildCandidatePool('LAL|NYK').candidates.length,0,'started games must be excluded');
+  fixtures.Tonights_Opponent[0].COMMENCE_TIME=future;fixtures.DK_Player_Props[0].OVER_ODDS=50;
+  await api.loadAllData();assert.equal(api.buildCandidatePool('LAL|NYK').candidates.length,0,'invalid odds must be excluded');
   seed();fixtures.Daily_Picks=[{DATE:today,RUN_NUMBER:1,player:player.PLAYER_NAME,prop_type:'REB',line:4.5,lean:'OVER'},
     {DATE:today,RUN_NUMBER:2,player:player.PLAYER_NAME,prop_type:'PTS',line:20.5,lean:'OVER'}];
   await api.loadAllData();

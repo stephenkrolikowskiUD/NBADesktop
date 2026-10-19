@@ -132,7 +132,7 @@ class EngineTests(unittest.TestCase):
         fresh=pd.DataFrame([log_row(today, points=12)]) if current_logs else seed.iloc[:0].copy()
         book=Workbook(seed)
         roster=pd.DataFrame([{'DISPLAY_FIRST_LAST':'Example Player','TEAM_ABBREVIATION':'LAL'}])
-        event={'id':'today','commence_time':today+'T20:00:00Z','home_team':'Los Angeles Lakers','away_team':'New York Knicks'}
+        event={'id':'today','commence_time':today+'T23:59:59-04:00','home_team':'Los Angeles Lakers','away_team':'New York Knicks'}
         def get(url, **kwargs):
             if url.endswith('/events'): return Response([event] if games else [])
             if url.endswith('/odds'):
@@ -155,7 +155,7 @@ class EngineTests(unittest.TestCase):
             stack.enter_context(patch('google.oauth2.service_account.Credentials.from_service_account_info',return_value=object()))
             stack.enter_context(patch('requests.get',side_effect=get))
             stack.enter_context(patch.object(nba_injuries,'fetch_official_report',return_value={'slate_date':today,'source':'fixture','reported_at':datetime.now(ZoneInfo('UTC')).isoformat(),'official':True,'submitted_teams':['LAL','NYK'],'players':[]}))
-            stack.enter_context(patch.object(nba_sources,'schedule',return_value=[{'homeTeam':{'teamTricode':'LAL'},'awayTeam':{'teamTricode':'NYK'},'gameTimeUTC':today+'T20:00:00Z'}] if games else []))
+            stack.enter_context(patch.object(nba_sources,'schedule',return_value=[{'homeTeam':{'teamTricode':'LAL'},'awayTeam':{'teamTricode':'NYK'},'gameTimeUTC':today+'T23:59:59-04:00'}] if games else []))
             stack.enter_context(patch.object(nba_sources,'refresh_seed',side_effect=RuntimeError('Fresh NBA logs unavailable')))
             if ai:
                 pick={'rank':1,'player':'Example Player','team':'WRONG','game':'LAL @ NYK',
@@ -194,8 +194,13 @@ class EngineTests(unittest.TestCase):
         self.assertNotEqual(rows[0]['ANALYSIS_SEASON'],book.tabs['NBA_Status'].get_all_records()[0]['SEASON'])
     def test_off_day_publishes_empty_snapshot(self):
         book,_=self.run_engine(games=False)
-        self.assertEqual(book.tabs['NBA_Status'].get_all_records()[0]['STATUS'],'NO_GAMES')
+        status=book.tabs['NBA_Status'].get_all_records()[0]
+        self.assertIsNotNone(datetime.fromisoformat(status['UPDATED_AT_UTC']).tzinfo)
+        self.assertEqual(status['STATUS'],'NO_GAMES')
         self.assertEqual(book.tabs['DK_Player_Props'].get_all_records(),[])
+    def test_off_day_skips_unavailable_player_log_api(self):
+        book,_=self.run_engine(games=False,logs_fail=True)
+        self.assertEqual(book.tabs['NBA_Status'].get_all_records()[0]['STATUS'],'NO_GAMES')
     def test_ai_pick_matches_market_and_uses_verified_team(self):
         book,_=self.run_engine(ai=True)
         picks=book.tabs['Daily_Picks'].get_all_records()

@@ -1,0 +1,57 @@
+[
+  {
+    "LEDGER_ROW": "256",
+    "DATE_KEY": "2026-04-21",
+    "player": "Alperen Sengun",
+    "METRIC": "REB",
+    "line": "8.5",
+    "SIDE": "OVER",
+    "RECORDED_OUTCOME": "MISS",
+    "OUTCOME": "HIT",
+    "RECONCILED_ACTUAL": "11.0"
+  },
+  {
+    "LEDGER_ROW": "260",
+    "DATE_KEY": "2026-04-21",
+    "player": "Tari Eason",
+    "METRIC": "REB",
+    "line": "5.5",
+    "SIDE": "OVER",
+    "RECORDED_OUTCOME": "MISS",
+    "OUTCOME": "HIT",
+    "RECONCILED_ACTUAL": "8.0"
+  },
+  {
+    "LEDGER_ROW": "289",
+    "DATE_KEY": "2026-04-24",
+    "player": "Shaedon Sharpe",
+    "METRIC": "PR",
+    "line": "12.5",
+    "SIDE": "OVER",
+    "RECORDED_OUTCOME": "DNP",
+    "OUTCOME": "MISS",
+    "RECONCILED_ACTUAL": "7.0"
+  },
+  {
+    "LEDGER_ROW": "291",
+    "DATE_KEY": "2026-04-24",
+    "player": "Deni Avdija",
+    "METRIC": "AST",
+    "line": "6.5",
+    "SIDE": "OVER",
+    "RECORDED_OUTCOME": "MISS",
+    "OUTCOME": "HIT",
+    "RECONCILED_ACTUAL": "9.0"
+  },
+  {
+    "LEDGER_ROW": "504",
+    "DATE_KEY": "2026-05-06",
+    "player": "Victor Wembanyama",
+    "METRIC": "REB",
+    "line": "12.5",
+    "SIDE": "OVER",
+    "RECORDED_OUTCOME": "MISS",
+    "OUTCOME": "HIT",
+    "RECONCILED_ACTUAL": "15.0"
+  }
+]

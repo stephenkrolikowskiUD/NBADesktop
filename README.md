@@ -68,3 +68,32 @@ Offline checks (no live sheet writes):
 NBA_CACHE_DIR=/tmp/nba-qa-cache python3 -m unittest discover -s tests -q
 node tests/test_nba_dashboard.cjs
 ```
+
+## Review Follow-up
+
+The review fixes allow off-day status pages to load alongside older historical tabs, publish ISO timestamps for Safari, and leave missing player boxes pending. Game Entry requires verified availability, no minutes restriction, a future game start, an exact market line, and valid odds. Player-name joins normalize accents and suffixes; unmatched injury-report names disable healthy-by-absence inference for the affected team. AI generation failures appear as publication warnings. GitHub Actions retains Sheet backups as artifacts for seven days, including after failed runs.
+
+For staging, set `NBA_SHEET_ID` for both Python scripts (or the GitHub Actions repository variable). Open the dashboard with `?sheetId=STAGING_SHEET_ID`. With no override, all components use the existing production workbook. Stage the engine and frontend together: the frontend now requires `NBA_Status.UPDATED_AT_UTC` for freshness.
+
+The four-hour freshness limit still applies to manual operation: rerun before it expires, including before the evening slate. Do not overlap Colab writers with the engine or grader; Actions concurrency cannot coordinate a separate Colab session. An authenticated Python 3.12 staging run, current official injury PDF access/layout, postponed/suspended ESPN coverage, real API quota consumption, and actual iPhone QA remain release requirements. Direct dependency pins are not a complete transitive lockfile.
+
+Selection identity intentionally includes line, book, and event. A changed market can be a distinct selection, while an identical market is not appended again. Latest-run convergence does not currently record a separate observation when Gemini repeats an existing selection; that behavior needs a separate observation log rather than duplicate graded picks.
+
+## New-season Launch Tracking
+
+The grader publishes season-specific tabs such as `Pick_Performance_2026_27` and `Pick_Performance_2026_27_Snapshots`. The original historical tabs and Daily_Picks rows are retained. Performance excludes other seasons, duplicate selections, unvalidated markets, invalid odds, missing book/event identity, stale quotes, and unverified publication timing. New engine picks record UTC publication time, market-validation policy, and baseline/sample metadata. Returns use equal units at each recorded entry price; these are research-selection returns, not a record of placed wagers. Closing-line metrics remain unavailable until closing quote provenance is verified.
+
+Game Entry uses equal weights for every AI tier and metric. Historical Wilson scores cannot affect its ranking. AI labels remain visible as unvalidated research labels. No AST/PR penalties, baseline blending, or new AI-agreement filters were added.
+
+The frontend reads `Dashboard_Player_Stats`, containing only tonight's roster and each player's explicitly selected analysis season, plus the columns needed by existing views. Full `Player_Stats` remains the engine/grader history. The new feed is resized after a successful write to avoid unused grid allocation. This reduces frontend payload and allocation; it does not establish that the entire workbook is below Google's capacity limit. Deploy the engine before switching the frontend, and verify the new feed in the staging workbook.
+
+`research/2025-26/` contains an unchanged original ledger and a deduplicated research copy with five verified regrades. Unsupported historical lines are flagged; none qualifies for new-season performance. Claude's claimed ten regrades cannot be reconciled without the row-level list, so the manifest records this unresolved item. These are local import-ready exports; no live historical tab has been created.
+
+Additional offline contract check:
+
+```sh
+NBA_CACHE_DIR=/tmp/nba-qa-cache NBA_BACKUP_DIR=/tmp/nba-qa-backups python3 tests/export_engine_fixture.py /tmp/nba-contract.json
+NBA_CONTRACT_FIXTURE=/tmp/nba-contract.json node tests/test_nba_dashboard.cjs
+```
+
+Authenticated staging still requires credentials and a separate workbook: run the engine, load the dashboard with `?sheetId=STAGING_ID`, and run the grader with the same `NBA_SHEET_ID`. Verify fresh and off-day states, eligible performance, exact prices, prior-season context, game locks, and Safari/mobile behavior before production publication. Offline contract checks do not establish live API coverage or deployment readiness.

@@ -22,6 +22,61 @@ def event_is_on_date(event, target_date):
         return False
 
 
+def is_actionable_player(row, now):
+    status=str(row.get('STATUS') or row.get('AVAILABILITY') or 'UNKNOWN').strip().upper()
+    restricted=str(row.get('MINUTES_RESTRICTED', '')).strip().lower() in {'true','1'}
+    try:
+        start=datetime.fromisoformat(str(row.get('COMMENCE_TIME') or '').replace('Z','+00:00'))
+        return status=='AVAILABLE' and not restricted and start.tzinfo is not None and start>now
+    except (ValueError,TypeError):
+        return False
+
+
+PERFORMANCE_POLICY = 'nba-market-provenance-v1'
+
+
+def performance_eligibility(row, season):
+    try:
+        if season_for_date(str(row.get('DATE',''))[:10]) != season:return False, 'outside season'
+    except ValueError:
+        return False, 'invalid date'
+    if not event_is_on_date({'commence_time':row.get('COMMENCE_TIME')}, str(row.get('DATE',''))[:10]):
+        return False, 'event date mismatch'
+    if str(row.get('MARKET_VALIDATED','')).lower() not in {'true','1'}:
+        return False, 'market not validated'
+    if not row.get('BOOK') or not row.get('EVENT_ID') or finite_odds_probability(row.get('ODDS')) is None:
+        return False, 'missing market identity or valid odds'
+    try:
+        quote,published,start=[datetime.fromisoformat(str(row.get(field,'')).replace('Z','+00:00')) for field in ['QUOTE_TIME','PUBLISHED_AT_UTC','COMMENCE_TIME']]
+        if any(value.tzinfo is None for value in [quote,published,start]) or not quote<=published<start:
+            return False, 'unverified pregame timing'
+        if (published-quote).total_seconds()>4*3600:
+            return False, 'stale market quote'
+    except (ValueError,TypeError):
+        return False, 'missing timestamp'
+    if row.get('lean') not in {'OVER','UNDER'}:
+        return False, 'invalid side'
+    try:
+        if not math.isfinite(float(row.get('line'))):return False, 'invalid line'
+    except (ValueError,TypeError):
+        return False, 'invalid line'
+    return True, ''
+
+
+def dashboard_stats(history, tonight):
+    import pandas as pd
+    from nba_injuries import norm
+    metrics=['MIN','PTS','REB','AST','STL','BLK','TOV','FG3M','FG3A','PRA','PR','PA','RA','STOCKS','DD','DK_FP','UD_FP','FPPM','UD_FPPM','USAGE_PPM']
+    names=['PLAYER_NAME','SEASON','TEAM_ABBREVIATION','GAME_DATE','MATCHUP','GAME_OPP','WL','FGA','FTA','FGM','LAST_UPDATED']
+    names += metrics + [prefix+metric for prefix in ['Seas_','L3_','L5_','L10_'] for metric in metrics]
+    columns=[name for name in dict.fromkeys(names) if name in history.columns]
+    if tonight.empty:return pd.DataFrame(columns=columns)
+    scopes={norm(row['PLAYER_NAME']):row['ANALYSIS_SEASON'] for row in tonight.to_dict('records')}
+    frame=history.copy()
+    keep=[scopes.get(norm(row['PLAYER_NAME']))==row['SEASON'] for row in frame.to_dict('records')]
+    return frame.loc[keep,columns].copy()
+
+
 def validate_market_picks(picks, props, normalize_name):
     """Only real, priced markets can become published picks; never invent a line."""
     markets = {}

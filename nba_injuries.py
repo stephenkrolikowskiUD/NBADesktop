@@ -35,6 +35,9 @@ def apply_availability(roster,report,date,now):
     fresh=bool(timestamp and timestamp<=now and (now-timestamp).total_seconds()<=6*3600 and report.get('slate_date')==date)
     lookup={(norm(p.get('player')),p.get('team')):p for p in report.get('players',[])}
     submitted=set(report.get('submitted_teams',[])) if fresh and report.get('official') else set()
+    roster_keys={(norm(person['PLAYER_NAME']),person['CURRENT_TEAM']) for person in roster}
+    uncertain_teams={team for player,team in lookup if (player,team) not in roster_keys}
+    submitted-=uncertain_teams
     out=[]
     for person in roster:
         row=dict(person);team=row['CURRENT_TEAM'];item=lookup.get((norm(row['PLAYER_NAME']),team))

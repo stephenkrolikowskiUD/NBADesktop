@@ -266,10 +266,10 @@ tr.win td{background:#0f2a1a}tr.loss td{background:#2a0f0f}
 <body>
 <div id="app"><div class="loading"><div style="font-size:32px;animation:bounce .8s ease-in-out infinite">🏀</div><div style="color:#666;font-size:14px">Loading dashboard...</div></div></div>
 <script>
-const SHEET_ID="12gBgVx_RCsIytjZHjfZWgLtG-R-zcPbYYE-CVFd4EDw";
+const SHEET_ID=new URL(globalThis.location?.href||"http://localhost").searchParams.get("sheetId")||"12gBgVx_RCsIytjZHjfZWgLtG-R-zcPbYYE-CVFd4EDw";
 
-const GAME_ENTRY_TIER_WEIGHTS = { SMASH: 1.5, STRONG: 1.0, LEAN: 0.7 };
-const GAME_ENTRY_DEFAULT_WLB = 0.42;
+const GAME_ENTRY_TIER_WEIGHTS = { SMASH: 1, STRONG: 1, LEAN: 1 };
+const GAME_ENTRY_DEFAULT_WLB = 1;
 const GAME_ENTRY_MIN_LEGS = 1;
 const GAME_ENTRY_MAX_LEGS = 8;
 const GAME_ENTRY_DEFAULT_LEGS = 5;
@@ -410,6 +410,7 @@ function getSampleFlags(name){
 }
 function playerAvailability(name){
   ensureDerived();const row=derived.tonightByName.get(normalizePlayerName(name))||{};
+  if(isTruthyFlag(row.MINUTES_RESTRICTED))return "MINUTES RESTRICTED";
   return String(row.STATUS||row.AVAILABILITY||row.INJURY_STATUS||"UNKNOWN").toUpperCase();
 }
 function bookLabel(prop){return String(prop?.BOOK||"draftkings").toLowerCase()==="fanduel"?"FanDuel":"DraftKings"}
@@ -424,7 +425,7 @@ function riskBadges(name,{showLimited=true}={}){
 
 // ═══ DATA CLEANING (ported from MLB) ═══
 function cleanRows(rows){
-  if(!rows||!rows.length)return rows;
+  if(!Array.isArray(rows)||!rows.length)return [];
   return rows.map(row=>{
     const clean={};
     for(const[k,v]of Object.entries(row)){
@@ -435,7 +436,7 @@ function cleanRows(rows){
   });
 }
 function normalizeKeys(rows){
-  if(!rows||!rows.length)return rows;
+  if(!Array.isArray(rows)||!rows.length)return [];
   return rows.map(row=>{
     const clean={};
     for(const[k,v]of Object.entries(row)){
@@ -550,7 +551,8 @@ function evaluateFeed(rows,now=Date.now(),today=easternTodayISO()){
   const status=rows?.[0];
   if(!status||!rowIsCurrent(status,today))return {usable:false,text:"NBA feed is awaiting today's verified update. Previous slate hidden."};
   // Engine publishes Eastern timestamps with an explicit zone abbreviation.
-  const stamp=Date.parse(String(status.LAST_UPDATED||""));
+  const rawStamp=String(status.UPDATED_AT_UTC||"");
+  const stamp=/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(rawStamp)?Date.parse(rawStamp):NaN;
   if(!Number.isFinite(stamp)||now-stamp>4*60*60*1000||stamp>now+5*60*1000)
     return {usable:false,text:"NBA feed is stale. Refresh after the next engine update."};
   if(status.STATUS==="NO_GAMES")return {usable:false,text:`No NBA games scheduled for ${today}.`};
@@ -968,13 +970,50 @@ function getEntryGames(){return getMemo('gameEntry:games',()=>{const byId=new Ma
 function setGameEntryGame(gameId){st.gameEntry=st.gameEntry||{selectedGame:null,legCount:GAME_ENTRY_DEFAULT_LEGS,entry:null};st.gameEntry.selectedGame=gameId;st.gameEntry.entry=null;st.dataVersion++;render()}
 function setGameEntryLegs(n){st.gameEntry=st.gameEntry||{selectedGame:null,legCount:GAME_ENTRY_DEFAULT_LEGS,entry:null};st.gameEntry.legCount=Math.max(GAME_ENTRY_MIN_LEGS,Math.min(GAME_ENTRY_MAX_LEGS,parseInt(n)||GAME_ENTRY_DEFAULT_LEGS));st.gameEntry.entry=null;st.dataVersion++;render()}
 function entryLatestPicks(){const rows=entryAllPicks().filter(p=>entryDateISO(p.DATE||p.date)===entryTodayISO());const maxRun=Math.max(0,...rows.map(p=>toNum(p.RUN_NUMBER||p.run_number||0)));return maxRun?rows.filter(p=>toNum(p.RUN_NUMBER||p.run_number||0)===maxRun):rows}
-function entryFindProp(player,metric,line){const pn=normalizePlayerName(player),mn=entryMetric(metric),lt=String(line??'').trim();return (st.props||[]).find(p=>normalizePlayerName(p.PLAYER_NAME)===pn&&entryMetric(p.METRIC)===mn&&(lt===''||String(p.DK_LINE??'').trim()===lt))||(st.props||[]).find(p=>normalizePlayerName(p.PLAYER_NAME)===pn&&entryMetric(p.METRIC)===mn)||null}
+function entryFindProp(player,metric,line){
+  const playerKey=normalizePlayerName(player),metricKey=entryMetric(metric),value=Number(line);
+  if(line===null||line===undefined||String(line).trim()===''||!Number.isFinite(value))return null;
+  return (st.props||[]).find(prop=>normalizePlayerName(prop.PLAYER_NAME)===playerKey&&entryMetric(prop.METRIC)===metricKey&&Number(prop.DK_LINE)===value)||null;
+}
 function entryBookName(book){const k=String(book||'').toLowerCase();return {draftkings:'DK',fanduel:'FD',betmgm:'BetMGM',espnbet:'ESPN BET',caesars:'Caesars'}[k]||String(book||'')}
-function entryBestBook(prop,lean){if(!prop)return null;const side=String(lean||'OVER').toUpperCase()==='UNDER'?'UNDER':'OVER';const book=prop[`BEST_${side}_BOOK`];const odds=prop[`BEST_${side}_ODDS`];if(!book||odds==='')return null;const delta=Number(prop[`BEST_${side}_DELTA_PP`]);return {book:String(book),odds,delta:Number.isFinite(delta)?delta:null,isDK:String(book).toLowerCase()==='draftkings'}}
+function entryBestBook(prop,lean){if(!prop)return null;const side=String(lean||'OVER').toUpperCase()==='UNDER'?'UNDER':'OVER';const book=prop[`BEST_${side}_BOOK`];const odds=prop[`BEST_${side}_ODDS`];if(!book||impliedProb(odds)===null)return null;const delta=Number(prop[`BEST_${side}_DELTA_PP`]);return {book:String(book),odds,delta:Number.isFinite(delta)?delta:null,isDK:String(book).toLowerCase()==='draftkings'}}
 function renderEntryBestBookLine(prop,lean){const b=entryBestBook(prop,lean);if(!b)return '';const color=b.isDK?'#9ca3af':'#eab308';const delta=b.delta!==null&&!b.isDK&&Math.abs(b.delta)>0.05?` (${b.delta>0?'+':''}${b.delta.toFixed(1)}pp${b.delta>=3?' ⭐':''})`:'';return `<div style="font-size:10px;color:${color};font-weight:800;margin-top:3px">🏪 Best @ ${entryBookName(b.book)} ${entryFmtOdds(b.odds)}${delta}</div>`}
 function entryBestBookKey(leg){const b=entryBestBook(leg.prop,leg.lean);return b?entryBookName(b.book):''}
-function entryPerfWLB(metric){const mn=entryMetric(metric);const row=(st.pickPerformance||[]).find(r=>String(r.DIMENSION_TYPE||r.dimension_type||'').toLowerCase()==='prop_type_norm'&&entryMetric(r.DIMENSION_VALUE||r.dimension_value)===mn&&String(r.TIME_WINDOW||r.time_window||'')==='all_time'&&String(r.MIN_SAMPLE_FLAG||r.min_sample_flag||'').toUpperCase()==='TRUE');const v=row?Number(row.WILSON_LOWER_95||row.wilson_lower_95):NaN;return Number.isFinite(v)?v:GAME_ENTRY_DEFAULT_WLB}
-function buildCandidatePool(gameId){const games=getEntryGames();const game=games.find(g=>g.id===gameId);if(!game)return {game:null,candidates:[]};const roster=entryRosterRows().filter(r=>r.id===gameId);const playerNames=new Set(roster.map(r=>normalizePlayerName(r.player)));const candidates=[];const seenAI=new Set();entryLatestPicks().forEach(p=>{const g=entryGameFromText(p.game||p.GAME||p.matchup||p.MATCHUP);let inGame=g&&g.id===gameId;if(!inGame&&playerNames.has(normalizePlayerName(p.player)))inGame=true;if(!inGame)return;const prop=entryFindProp(p.player,p.prop_type,p.line);if(!prop)return;const lean=String(p.lean||'OVER').toUpperCase()==='UNDER'?'UNDER':'OVER';const odds=lean==='OVER'?prop.OVER_ODDS:prop.UNDER_ODDS;if(!odds)return;const key=`${normalizePlayerName(p.player)}|${entryMetric(p.prop_type)}|${lean}`;seenAI.add(key);candidates.push({player:p.player,prop_type:entryMetric(p.prop_type),line:p.line||prop.DK_LINE,lean,odds,ai_tier:normalizeConfidence(p.confidence),source:'AI',prop})});(st.props||[]).forEach(prop=>{if(!playerNames.has(normalizePlayerName(prop.PLAYER_NAME)))return;['OVER','UNDER'].forEach(lean=>{const odds=lean==='OVER'?prop.OVER_ODDS:prop.UNDER_ODDS;if(!odds)return;const key=`${normalizePlayerName(prop.PLAYER_NAME)}|${entryMetric(prop.METRIC)}|${lean}`;if(seenAI.has(key))return;candidates.push({player:prop.PLAYER_NAME,prop_type:entryMetric(prop.METRIC),line:prop.DK_LINE,lean,odds,ai_tier:'LEAN',source:'DK',prop})})});return {game,candidates}}
+function entryPerfWLB(metric){return GAME_ENTRY_DEFAULT_WLB}
+function buildCandidatePool(gameId){
+  const game=getEntryGames().find(row=>row.id===gameId);
+  if(!game)return {game:null,candidates:[]};
+  const eligible=name=>{
+    const lock=getLockInfo(name);
+    return playerAvailability(name)==='AVAILABLE'&&Number.isFinite(lock.startMs)&&Date.now()<lock.startMs;
+  };
+  const roster=entryRosterRows().filter(row=>row.id===gameId&&eligible(row.player));
+  const playerNames=new Set(roster.map(row=>normalizePlayerName(row.player)));
+  const candidates=[],seenAI=new Set();
+  entryLatestPicks().forEach(pick=>{
+    if(!playerNames.has(normalizePlayerName(pick.player)))return;
+    const prop=entryFindProp(pick.player,pick.prop_type,pick.line);
+    if(!prop)return;
+    const lean=String(pick.lean||'').toUpperCase();
+    if(!['OVER','UNDER'].includes(lean))return;
+    const odds=lean==='OVER'?prop.OVER_ODDS:prop.UNDER_ODDS;
+    if(impliedProb(odds)===null)return;
+    const key=[normalizePlayerName(pick.player),entryMetric(pick.prop_type),lean].join('|');
+    seenAI.add(key);
+    candidates.push({player:pick.player,prop_type:entryMetric(pick.prop_type),line:Number(prop.DK_LINE),lean,odds,ai_tier:normalizeConfidence(pick.confidence),source:'AI',prop});
+  });
+  (st.props||[]).forEach(prop=>{
+    if(!playerNames.has(normalizePlayerName(prop.PLAYER_NAME))||!Number.isFinite(Number(prop.DK_LINE))||prop.DK_LINE==='')return;
+    ['OVER','UNDER'].forEach(lean=>{
+      const odds=lean==='OVER'?prop.OVER_ODDS:prop.UNDER_ODDS;
+      if(impliedProb(odds)===null)return;
+      const key=[normalizePlayerName(prop.PLAYER_NAME),entryMetric(prop.METRIC),lean].join('|');
+      if(seenAI.has(key))return;
+      candidates.push({player:prop.PLAYER_NAME,prop_type:entryMetric(prop.METRIC),line:Number(prop.DK_LINE),lean,odds,ai_tier:'LEAN',source:'DK',prop});
+    });
+  });
+  return {game,candidates};
+}
 function scoreCandidate(c){const tier=normalizeConfidence(c.ai_tier||'LEAN');const tierWeight=GAME_ENTRY_TIER_WEIGHTS[tier]||GAME_ENTRY_TIER_WEIGHTS.LEAN;const wlb=entryPerfWLB(c.prop_type);return {...c,ai_tier:tier,tier_weight:tierWeight,wlb,leg_score:tierWeight*wlb}}
 function selectTopN(candidates,n){const sorted=candidates.map(scoreCandidate).sort((a,b)=>b.leg_score-a.leg_score);const used=new Set(),perPlayer=new Map(),out=[];for(const c of sorted){const playerKey=normalizePlayerName(c.player),key=`${playerKey}|${entryMetric(c.prop_type)}`;if(used.has(key))continue;if((perPlayer.get(playerKey)||0)>=GAME_ENTRY_MAX_LEGS_PER_PLAYER)continue;used.add(key);perPlayer.set(playerKey,(perPlayer.get(playerKey)||0)+1);out.push(c);if(out.length>=n)break}return out}
 function entryAmericanToDecimal(odds){const o=Number(String(odds).replace(/[^0-9+\-.]/g,''));if(!Number.isFinite(o)||o===0)return 1;return o>0?1+o/100:1+100/Math.abs(o)}
@@ -984,12 +1023,17 @@ function calculateParlayMath(legs){const decimal=legs.reduce((p,l)=>p*entryAmeri
 function buildGameEntry(){const ge=st.gameEntry||{};if(!ge.selectedGame)return null;const {game,candidates}=buildCandidatePool(ge.selectedGame);if(!game)return null;const requested=ge.legCount||GAME_ENTRY_DEFAULT_LEGS;const legs=selectTopN(candidates,requested);const math=calculateParlayMath(legs);return {game,requested,legs,candidates,math,score:legs.reduce((s,l)=>s+l.leg_score,0)}}
 function renderGameSelector(games){if(!games.length)return `<div class="section"><div class="card"><div class="card-title">TONIGHT'S GAMES</div><div class="empty" style="padding:24px;text-align:center">No games scheduled tonight.</div></div></div>`;const sel=st.gameEntry?.selectedGame;return `<div class="section"><div class="card"><div class="card-title">TONIGHT'S GAMES</div><div style="display:grid;gap:8px;margin-top:10px">${games.map(g=>`<button onclick='setGameEntryGame(${JSON.stringify(g.id)})' style="text-align:left;border:1px solid ${sel===g.id?'#eab308':'#334155'};background:${sel===g.id?'#eab30822':'transparent'};color:${sel===g.id?'#eab308':'inherit'};border-radius:8px;padding:10px 12px;font-weight:800;cursor:pointer">${esc(g.label)}${g.time?` <span style="opacity:.75;font-size:11px">— ${esc(g.time)}</span>`:''}</button>`).join('')}</div></div></div>`}
 function renderLegCountSelector(){const cur=st.gameEntry?.legCount||GAME_ENTRY_DEFAULT_LEGS;return `<div class="section"><div class="card"><div class="card-title">LEGS</div><div style="display:flex;flex-wrap:wrap;gap:6px;margin:10px 0">${Array.from({length:8},(_,i)=>i+1).map(n=>`<button onclick="setGameEntryLegs(${n})" style="border:1px solid ${cur===n?'#eab308':'#334155'};background:${cur===n?'#eab308':'transparent'};color:${cur===n?'#07130b':'inherit'};border-radius:999px;padding:7px 12px;font-weight:900;cursor:pointer">${n}</button>`).join('')}</div><div style="font-size:11px;color:#9ca3af">Underdog Pick'em supports 2-8 legs. 1 leg is a straight bet (informational only).</div></div></div>`}
-function renderEntry(entry){if(!entry)return '';if(!entry.candidates.length)return `<div class="section"><div class="card"><div class="card-title">🎟️ ENTRY</div><div class="empty" style="padding:24px;text-align:center">No props available for this game yet.</div></div></div>`;if(!entry.legs.length)return `<div class="section"><div class="card"><div class="card-title">🎟️ ENTRY</div><div class="empty" style="padding:24px;text-align:center">No usable odds for this game yet.</div></div></div>`;const odds=entry.math.american;const oddsText=odds>0?`+${odds}`:`${odds}`;const books=[...new Set(entry.legs.map(entryBestBookKey).filter(Boolean))];const warning=books.length>=2?`<div style="margin-top:12px;background:#f59e0b14;border:1px solid #f59e0b55;color:#fbbf24;border-radius:8px;padding:8px;font-size:11px">⚠️ Cross-book: legs split across ${books.join(', ')}. Single-book parlay may price differently.</div>`:'';const shortage=entry.legs.length<entry.requested?`<div style="margin-top:8px;color:#fbbf24;font-size:11px">Only ${entry.legs.length} legs available (you requested ${entry.requested}).</div>`:'';return `<div class="section"><div class="card"><div class="card-title">🎟️ ENTRY — ${esc(entry.game.label)} · ${entry.legs.length} legs</div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0"><div class="stat-box"><div class="val">${oddsText}</div><div class="lbl">Combined</div></div><div class="stat-box"><div class="val">$${entry.math.return10.toFixed(0)}</div><div class="lbl">$10 return</div></div><div class="stat-box"><div class="val">${entry.score.toFixed(2)}</div><div class="lbl">Score</div></div></div>${shortage}<div style="height:1px;background:#334155;margin:12px 0"></div>${entry.legs.map((l,i)=>`<div style="padding:10px 0;border-bottom:1px solid #263238"><div style="display:flex;justify-content:space-between;gap:8px"><div style="font-weight:900">${i+1}. ${typeof playerLink==='function'?playerLink(l.player,l.prop_type,l.line):esc(l.player)} — ${l.prop_type} ${l.lean} ${l.line}</div><div style="font-weight:900;color:${l.lean==='OVER'?'#22c55e':'#ef4444'}">${entryFmtOdds(l.odds)}</div></div><div style="font-size:11px;color:#9ca3af;margin-top:4px">Why: ${l.ai_tier} × ${l.prop_type} WLB ${l.wlb.toFixed(2)} = ${l.leg_score.toFixed(2)} · ${l.source}</div>${renderEntryBestBookLine(l.prop,l.lean)}</div>`).join('')}${warning}<button onclick="copyEntryToClipboard()" style="margin-top:14px;border:1px solid #eab308;background:#eab30822;color:#eab308;border-radius:8px;padding:10px 12px;font-weight:900;cursor:pointer;width:100%">${window.__entryCopied?'✓ Copied':'📋 Copy entry'}</button></div></div>`}
+function renderEntry(entry){if(!entry)return '';if(!entry.candidates.length)return `<div class="section"><div class="card"><div class="card-title">🎟️ ENTRY</div><div class="empty" style="padding:24px;text-align:center">No props available for this game yet.</div></div></div>`;if(!entry.legs.length)return `<div class="section"><div class="card"><div class="card-title">🎟️ ENTRY</div><div class="empty" style="padding:24px;text-align:center">No usable odds for this game yet.</div></div></div>`;const odds=entry.math.american;const oddsText=odds>0?`+${odds}`:`${odds}`;const books=[...new Set(entry.legs.map(entryBestBookKey).filter(Boolean))];const warning=books.length>=2?`<div style="margin-top:12px;background:#f59e0b14;border:1px solid #f59e0b55;color:#fbbf24;border-radius:8px;padding:8px;font-size:11px">⚠️ Cross-book: legs split across ${books.join(', ')}. Single-book parlay may price differently.</div>`:'';const shortage=entry.legs.length<entry.requested?`<div style="margin-top:8px;color:#fbbf24;font-size:11px">Only ${entry.legs.length} legs available (you requested ${entry.requested}).</div>`:'';return `<div class="section"><div class="card"><div class="card-title">🎟️ ENTRY — ${esc(entry.game.label)} · ${entry.legs.length} legs</div><div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:12px 0"><div class="stat-box"><div class="val">${oddsText}</div><div class="lbl">Combined</div></div><div class="stat-box"><div class="val">$${entry.math.return10.toFixed(0)}</div><div class="lbl">$10 return</div></div><div class="stat-box"><div class="val">Neutral</div><div class="lbl">Weighting</div></div></div>${shortage}<div style="height:1px;background:#334155;margin:12px 0"></div>${entry.legs.map((l,i)=>`<div style="padding:10px 0;border-bottom:1px solid #263238"><div style="display:flex;justify-content:space-between;gap:8px"><div style="font-weight:900">${i+1}. ${typeof playerLink==='function'?playerLink(l.player,l.prop_type,l.line):esc(l.player)} — ${l.prop_type} ${l.lean} ${l.line}</div><div style="font-weight:900;color:${l.lean==='OVER'?'#22c55e':'#ef4444'}">${entryFmtOdds(l.odds)}</div></div><div style="font-size:11px;color:#9ca3af;margin-top:4px">Neutral research weight · AI label ${l.ai_tier} (unvalidated) · ${l.source}</div>${renderEntryBestBookLine(l.prop,l.lean)}</div>`).join('')}${warning}<button onclick="copyEntryToClipboard()" style="margin-top:14px;border:1px solid #eab308;background:#eab30822;color:#eab308;border-radius:8px;padding:10px 12px;font-weight:900;cursor:pointer;width:100%">${window.__entryCopied?'✓ Copied':'📋 Copy entry'}</button></div></div>`}
 function renderGameEntryView(){st.gameEntry=st.gameEntry||{selectedGame:null,legCount:GAME_ENTRY_DEFAULT_LEGS,entry:null};const games=getEntryGames();let html=renderGameSelector(games);if(st.gameEntry.selectedGame){html+=renderLegCountSelector();html+=renderEntry(buildGameEntry())}return html}
 function entryCopyText(entry){const odds=entry.math.american;const oddsText=odds>0?`+${odds}`:`${odds}`;return `${entry.game.label} — ${entry.legs.length}-leg entry\n${entry.legs.map((l,i)=>`${i+1}. ${l.player} - ${l.prop_type} ${l.lean} ${l.line}`).join('\n')}\nCombined ${oddsText} | $10 → $${entry.math.return10.toFixed(0)}\nBuilt: ${new Date().toLocaleString()}`}
 function copyEntryToClipboard(){const entry=buildGameEntry();if(!entry)return;const text=entryCopyText(entry);if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(()=>{window.__entryCopied=true;render();setTimeout(()=>{window.__entryCopied=false;render()},1200)}).catch(()=>entryShowCopyFallback(text))}else entryShowCopyFallback(text)}
 function entryShowCopyFallback(text){window.__entryCopied=false;const box=document.createElement('textarea');box.value=text;box.style.position='fixed';box.style.left='10px';box.style.bottom='10px';box.style.width='320px';box.style.height='160px';box.style.zIndex='9999';document.body.appendChild(box);box.focus();box.select()}
 
+function performanceTabName(){return 'Pick_Performance_'+seasonForDate(easternTodayISO()).replace('-','_')}
+function currentPerformanceRows(rows,snapshot=false){
+  const season=seasonForDate(easternTodayISO());
+  return rows.filter(row=>row.SEASON===season&&row.PERFORMANCE_POLICY==='nba-market-provenance-v1'&&(snapshot||row.ROI_METHOD==='EQUAL_UNIT_RECORDED_ODDS'));
+}
 function setStatsTimeWindow(w){st.statsTimeWindow=w;render()}
 function statField(row,name){return row?.[name]??row?.[name.toLowerCase()]??row?.[name.toUpperCase()]??''}
 function statNum(row,name){return toNum(statField(row,name))}
@@ -1003,8 +1047,8 @@ function statsWindowLabel(w){return (STATS_WINDOWS.find(x=>x[0]===w)||[])[1]||w}
 function renderTimeWindowSelector(currentWindow){return `<div class="stats-strip" style="position:sticky;top:0;z-index:5;display:flex;gap:6px">${STATS_WINDOWS.map(([w,l])=>`<button class="tab-btn ${currentWindow===w?'active':''}" onclick="setStatsTimeWindow('${w}')" style="white-space:nowrap;${currentWindow===w?'background:#eab308;color:#07110b;border-color:#eab308;':''}">${l}</button>`).join('')}</div>`}
 function detectDrifts(rows,threshold=0.10){const all=(rows||[]).filter(r=>String(statField(r,'TIME_WINDOW'))==='all_time'&&statBool(r,'MIN_SAMPLE_FLAG'));const recent=(rows||[]).filter(r=>String(statField(r,'TIME_WINDOW'))==='last_30d'&&statBool(r,'MIN_SAMPLE_FLAG'));const map=new Map(all.map(r=>[`${statField(r,'DIMENSION_TYPE')}|${statField(r,'DIMENSION_VALUE')}`,r]));return recent.map(r=>{const key=`${statField(r,'DIMENSION_TYPE')}|${statField(r,'DIMENSION_VALUE')}`;const base=map.get(key);if(!base)return null;const hr30=statNum(r,'HIT_RATE'),hrAll=statNum(base,'HIT_RATE');const delta=hr30-hrAll;if(!Number.isFinite(delta)||Math.abs(delta)<threshold)return null;return{dimension_type:statField(r,'DIMENSION_TYPE'),dimension_value:statField(r,'DIMENSION_VALUE'),hit_rate_last_30d:hr30,hit_rate_all_time:hrAll,delta,n:statNum(r,'N_PICKS_DECISIVE')}}).filter(Boolean).sort((a,b)=>Math.abs(b.delta)-Math.abs(a.delta))}
 function renderDriftAlerts(rows){const drifts=detectDrifts(rows);if(!drifts.length)return '';const shown=drifts.slice(0,5);return `<div style="padding:0 16px 8px"><div style="color:#fbbf24;font-size:12px;font-weight:800;margin-bottom:6px">Drift Alerts</div>${shown.map(d=>`<div class="card" style="border-color:#fbbf2444;margin-bottom:6px"><div style="font-size:12px;color:#fbbf24;font-weight:800">⚠️ DRIFT — ${esc(String(d.dimension_value||d.dimension_type))}</div><div style="font-size:11px;color:#d1d5db;margin-top:4px">last 30d ${statPct(d.hit_rate_last_30d)} vs all-time ${statPct(d.hit_rate_all_time)} (${d.delta>0?'+':''}${Math.round(d.delta*100)}pp on n=${Math.round(d.n)})</div></div>`).join('')}${drifts.length>5?`<div style="color:#9ca3af;font-size:10px;padding:2px 4px">... and ${drifts.length-5} more</div>`:''}</div>`}
-function renderOverallCard(rows,w){const r=getMetricsForSlice(rows,'overall','',w);if(!r)return `<div class="empty">No overall stats for ${statsWindowLabel(w)}.</div>`;const low=!statBool(r,'MIN_SAMPLE_FLAG');return `<div class="card" style="margin:0 16px 10px;border-color:#eab30844"><div class="card-title">OVERALL — ${statsWindowLabel(w)} ${low?'<span style="font-size:10px;color:#fbbf24">(low sample)</span>':''}</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:end"><div><div style="font-size:34px;font-weight:900;color:#eab308">${statPct(statNum(r,'HIT_RATE'))}</div><div style="font-size:11px;color:#9ca3af">Push-adjusted hit rate</div><div style="font-size:12px;color:#d1d5db;margin-top:6px">${Math.round(statNum(r,'N_PICKS_DECISIVE'))} decisive / ${Math.round(statNum(r,'N_PICKS'))} picks</div></div><div style="text-align:right"><div style="font-size:18px;font-weight:800;color:${statNum(r,'ROI_PER_PICK')>=0?'#22c55e':'#ef4444'}">ROI/pick ${statSigned(statNum(r,'ROI_PER_PICK'))}</div><div style="font-size:11px;color:#9ca3af">Flat -115 model</div></div></div></div>`}
-function hitBar(rate){const r=Math.max(0,Math.min(1,Number(rate)||0));const w=Math.round(r*100);const good=r>=STATS_BREAK_EVEN;return `<div style="height:7px;background:#26313a;border-radius:999px;overflow:hidden;margin-top:5px"><div style="height:100%;width:${w}%;background:${good?'#22c55e':'#ef4444'}"></div></div><div style="font-size:9px;color:#9ca3af;margin-top:2px">break-even 52.4%</div>`}
+function renderOverallCard(rows,w){const r=getMetricsForSlice(rows,'overall','',w);if(!r)return `<div class="empty">No overall stats for ${statsWindowLabel(w)}.</div>`;const low=!statBool(r,'MIN_SAMPLE_FLAG');return `<div class="card" style="margin:0 16px 10px;border-color:#eab30844"><div class="card-title">OVERALL — ${statsWindowLabel(w)} ${low?'<span style="font-size:10px;color:#fbbf24">(low sample)</span>':''}</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:end"><div><div style="font-size:34px;font-weight:900;color:#eab308">${statPct(statNum(r,'HIT_RATE'))}</div><div style="font-size:11px;color:#9ca3af">Push-adjusted hit rate</div><div style="font-size:12px;color:#d1d5db;margin-top:6px">${Math.round(statNum(r,'N_PICKS_DECISIVE'))} decisive / ${Math.round(statNum(r,'N_PICKS'))} picks</div></div><div style="text-align:right"><div style="font-size:18px;font-weight:800;color:${statNum(r,'ROI_PER_PICK')>=0?'#22c55e':'#ef4444'}">Return ${statSigned(statNum(r,'ROI_PER_PICK'))}%</div><div style="font-size:11px;color:#9ca3af">Equal units at recorded entry odds</div></div></div></div>`}
+function hitBar(rate){const r=Math.max(0,Math.min(1,Number(rate)||0));const w=Math.round(r*100);const good=r>=STATS_BREAK_EVEN;return `<div style="height:7px;background:#26313a;border-radius:999px;overflow:hidden;margin-top:5px"><div style="height:100%;width:${w}%;background:${good?'#22c55e':'#ef4444'}"></div></div><div style="font-size:9px;color:#9ca3af;margin-top:2px">Observed hit rate; break-even depends on odds</div>`}
 function renderTierBreakdown(rows,w){const tiers=['SMASH','STRONG','LEAN'];const found=tiers.map(t=>getMetricsForSlice(rows,'confidence_norm',t,w)).filter(Boolean);if(!found.length)return '';const rates=found.map(r=>statNum(r,'HIT_RATE'));const collapse=found.length>=2&&rates.some((a,i)=>rates.some((b,j)=>j>i&&Math.abs(a-b)<=0.01));return `<div style="padding:0 16px 10px"><div style="color:#eab308;font-size:12px;font-weight:800;margin-bottom:6px">Confidence Tiers ${collapse?'<span style="color:#fbbf24;font-size:10px">⚠️ tier collapse</span>':''}</div>${tiers.map(t=>{const r=getMetricsForSlice(rows,'confidence_norm',t,w);if(!r)return '';const rate=statNum(r,'HIT_RATE');const color=t==='SMASH'?'#22c55e':t==='STRONG'?'#fbbf24':'#9ca3af';return `<div class="card" style="margin-bottom:6px"><div style="display:flex;justify-content:space-between;gap:10px"><div><span style="background:${color}22;color:${color};border:1px solid ${color}55;border-radius:999px;padding:2px 7px;font-size:10px;font-weight:800">${t}</span><div style="font-size:11px;color:#9ca3af;margin-top:5px">n=${Math.round(statNum(r,'N_PICKS_DECISIVE'))} · ROI/p ${statSigned(statNum(r,'ROI_PER_PICK'))}</div></div><div style="font-size:20px;font-weight:900;color:${color}">${statPct(rate)}</div></div>${hitBar(rate)}</div>`}).join('')}</div>`}
 function renderLeanBreakdown(rows,w){const over=getMetricsForSlice(rows,'lean_norm','OVER',w),under=getMetricsForSlice(rows,'lean_norm','UNDER',w);if(!over&&!under)return '';let call='';if(over&&under&&statBool(over,'MIN_SAMPLE_FLAG')&&statBool(under,'MIN_SAMPLE_FLAG')){const diff=statNum(under,'HIT_RATE')-statNum(over,'HIT_RATE');if(Math.abs(diff)>=0.05)call=`<div class="card" style="border-color:#60a5fa55;margin-bottom:6px;color:#bfdbfe;font-size:11px">💡 ${diff>0?'UNDERs':'OVERs'} outperforming by ${Math.abs(diff*100).toFixed(1)}pp — consider review.</div>`}return `<div style="padding:0 16px 10px"><div style="color:#eab308;font-size:12px;font-weight:800;margin-bottom:6px">Lean Breakdown</div>${call}${['OVER','UNDER'].map(v=>{const r=v==='OVER'?over:under;if(!r)return '';return `<div class="card" style="margin-bottom:6px"><div style="display:flex;justify-content:space-between"><div style="font-weight:800;color:#d1d5db">${v}<div style="font-size:11px;color:#9ca3af">n=${Math.round(statNum(r,'N_PICKS_DECISIVE'))} · ROI/p ${statSigned(statNum(r,'ROI_PER_PICK'))}</div></div><div style="font-size:20px;font-weight:900;color:${statNum(r,'HIT_RATE')>=STATS_BREAK_EVEN?'#22c55e':'#ef4444'}">${statPct(statNum(r,'HIT_RATE'))}</div></div></div>`}).join('')}</div>`}
 function renderCLVSummary(rows,w){const pos=getMetricsForSlice(rows,'clv_bucket','positive',w),neg=getMetricsForSlice(rows,'clv_bucket','negative',w);if(!pos&&!neg)return '';const cell=(label,r)=>`<div class="card"><div style="font-size:11px;color:#9ca3af;text-transform:uppercase">${label}</div><div style="font-size:20px;font-weight:900;color:${label.includes('Positive')?'#22c55e':'#ef4444'}">${r?statPct(statNum(r,'HIT_RATE')):'—'}</div><div style="font-size:11px;color:#d1d5db">n=${r?Math.round(statNum(r,'N_PICKS_DECISIVE')):0}</div></div>`;return `<div style="padding:0 16px 10px"><div style="color:#eab308;font-size:12px;font-weight:800;margin-bottom:6px">CLV Summary</div><div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">${cell('Positive CLV',pos)}${cell('Negative CLV',neg)}</div></div>`}
@@ -1026,13 +1070,13 @@ function renderBestBookLine(prop,lean){const b=getBestBookForLean(prop,lean);if(
 function bestBookKeyForLean(prop,lean){const b=getBestBookForLean(prop,lean);return b?formatBookName(b.book):""}
 function renderCrossBookWarning(legs){const books=[...new Set((legs||[]).map(l=>bestBookKeyForLean(l.prop,l.lean)).filter(Boolean))];return books.length>=2?`<div class="cross-book-warning" style="margin-top:6px;font-size:10px;color:#fbbf24;background:#f59e0b14;border:1px solid #f59e0b44;border-radius:6px;padding:6px">⚠️ Best book differs across legs (${books.join(", ")}). Single-book parlay may not match leg-by-leg EV.</div>`:""}
 
-function renderStatsView(){const w=st.statsTimeWindow||'last_30d';const rows=typeof getMemo==='function'?getMemo('statsRows:'+w,()=>st.pickPerformance||[]):(st.pickPerformance||[]);let html=renderTimeWindowSelector(w);if(!rows.length)return html+`<div class="empty" style="padding:40px 20px;text-align:center">📊 Stats unavailable — Pick Performance data will appear after the next grader run.</div>`;if(!statsRowsForWindow(rows,w).length)return html+`<div class="empty" style="padding:40px 20px;text-align:center">No Pick Performance rows for ${statsWindowLabel(w)}.</div>`;const updated=rows.map(r=>statField(r,'LAST_UPDATED')).filter(Boolean).sort().pop()||'';html+=renderDriftAlerts(rows);html+=renderOverallCard(rows,w);html+=renderTierBreakdown(rows,w);html+=renderLeanBreakdown(rows,w);html+=renderCLVSummary(rows,w);html+=renderPropTypeList(rows,w,'best');html+=renderPropTypeList(rows,w,'worst');html+=`<div class="timestamp">Data through ${esc(updated||'latest grader run')} · Updated daily after grader run</div>`;return html}
+function renderStatsView(){const w=st.statsTimeWindow||'last_30d';const rows=typeof getMemo==='function'?getMemo('statsRows:'+w,()=>st.pickPerformance||[]):(st.pickPerformance||[]);let html=renderTimeWindowSelector(w)+`<div class="card" style="margin:12px 16px">${esc(seasonForDate(easternTodayISO()))} research tracking · verified market provenance only. AI tiers are unvalidated; these results do not affect entry weights.</div>`;if(!rows.length)return html+`<div class="empty" style="padding:40px 20px;text-align:center">📊 New-season tracking is awaiting eligible settled picks. Previous-season results are excluded.</div>`;if(!statsRowsForWindow(rows,w).length)return html+`<div class="empty" style="padding:40px 20px;text-align:center">No Pick Performance rows for ${statsWindowLabel(w)}.</div>`;const updated=rows.map(r=>statField(r,'LAST_UPDATED')).filter(Boolean).sort().pop()||'';html+=renderDriftAlerts(rows);html+=renderOverallCard(rows,w);html+=renderTierBreakdown(rows,w);html+=renderLeanBreakdown(rows,w);html+=renderCLVSummary(rows,w);html+=renderPropTypeList(rows,w,'best');html+=renderPropTypeList(rows,w,'worst');html+=`<div class="timestamp">Data through ${esc(updated||'latest grader run')} · Updated daily after grader run</div>`;return html}
 
 function render(){
   const focus=saveFocus();
   const app=document.getElementById("app");
   if(st.loading){app.innerHTML=`<div class="loading"><div style="font-size:32px;animation:bounce .8s ease-in-out infinite">🏀</div><div style="color:#666;font-size:14px">Loading dashboard...</div></div>`;return}
-  if(st.error){app.innerHTML=`<div class="error">⚠️ ${esc(st.error)}<br><br><span style="color:#9ca3af;font-size:12px">Make sure your Google Sheet is set to "Anyone with the link can view"</span><br><br><button class="refresh-btn" id="retryBtn">Retry</button></div>`;document.getElementById("retryBtn")?.addEventListener("click",loadAllData);return}
+  if(st.error){app.innerHTML=`<div class="error">⚠️ ${esc(st.error)}<br><br><span style="color:#9ca3af;font-size:12px">Check the latest engine run and its published feed tabs before retrying.</span><br><br><button class="refresh-btn" id="retryBtn">Retry</button></div>`;document.getElementById("retryBtn")?.addEventListener("click",loadAllData);return}
   const{tonight,props,splits,player,metric,line,activeTab,oppFilter,aiPicks,picksView}=st;
   const lineNum=parseFloat(line)||0;const playerKey=normalizePlayerName(player);const pT=tonight.find(t=>normalizePlayerName(t.PLAYER_NAME)===playerKey)||{};
   const pHasLogs=hasLogs(player);
@@ -1056,7 +1100,7 @@ function render(){
   const pushS=lineNum?allLogs.filter(p=>getMetricVal(p,metric)===lineNum).length:null;
   const npG=allLogs.length-(pushS||0);const sRate=hS!==null&&npG>0?hS/npG:null;
   const overOdds=prop.OVER_ODDS,underOdds=prop.UNDER_ODDS;
-  const overImpl=overOdds?impliedProb(overOdds):null;const edge=sRate!==null&&overImpl!==null?sRate-overImpl:null;
+  const overImpl=overOdds?impliedProb(overOdds):null;const edge=allLogs.length>=5&&sRate!==null&&overImpl!==null?sRate-overImpl:null;
   const maxLog=Math.max(...last10.map(g=>getMetricVal(g,metric)),lineNum||0,1);
   const metricOpts=METRICS.map(m=>`<option value="${m}" ${m===metric?"selected":""}>${m}</option>`).join("");
   const bars=last10.map(g=>{const v=getMetricVal(g,metric),h=Math.max(4,(v/maxLog)*80);const ha=(g.MATCHUP||"").includes("vs.")?"vs":"@";return`<div class="bar-wrap"><div class="bar-val">${v}</div><div class="bar" style="height:${h}px;background:${barColor(v,lineNum)}"></div><div class="bar-date">${(g.GAME_DATE||"").slice(5)}</div><div class="bar-date" style="color:#d1d5db;margin-top:0">${ha}${g.GAME_OPP||""}</div></div>`}).join("");
@@ -1107,7 +1151,7 @@ function render(){
       <div class="sub-tab ${picksView==="parlays"?"active":""}" onclick="setPicksView('parlays')">🎯 Parlays</div>
       <div class="sub-tab ${picksView==="props"?"active":""}" onclick="setPicksView('props')">🎲 Props</div>
     </div>`;
-    const picksIntro=subTabs+renderConvergenceHTML();
+    const picksIntro=subTabs+`<div class="card" style="margin:12px 16px">Research picks. AI confidence labels and historical hit rates are unvalidated signals, not estimated win probabilities.</div>`+renderConvergenceHTML();
 
     if(picksView==="bets"){
       const allBets=getBestBets();const posEV=allBets.filter(b=>b.edge>0);const elite=posEV.filter(b=>b.edge>=0.15);const strong=posEV.filter(b=>b.edge>=0.08&&b.edge<0.15);
@@ -1218,6 +1262,7 @@ function render(){
   const showH=activeTab==="dashboard"||activeTab==="gamelog";
   app.innerHTML=`
   ${st.feedStatus?`<div role="status" class="card" style="margin:12px 16px;color:#cbd5e1">${esc(st.feedStatus.text)}</div>`:""}
+  <div style="margin:8px 16px;color:#9ca3af;font-size:11px">Research mode · AI tiers are unvalidated. Historical rates describe past games, not estimated win probabilities.</div>
   <div class="header"><div class="header-top"><div class="header-title">🏀 NBA DFS Dashboard</div><div style="display:flex;gap:8px"><button class="theme-btn" id="themeBtn">${st.theme==="light"?"🌙 Dark":"☀️ Light"}</button><button class="refresh-btn" id="refreshBtn">↻ Refresh</button></div></div>
     <div class="top-nav"><button class="tab-btn ${activeTab==="dashboard"?"active":""}" onclick="switchTab('dashboard')">📊 Dash</button><button class="tab-btn ${activeTab==="gamelog"?"active":""}" onclick="switchTab('gamelog')">📋 Log</button><button class="tab-btn ${activeTab==="picks"?"active":""}" onclick="switchTab('picks')">🔥 Picks</button><button class="tab-btn ${activeTab==="stats"?"active":""}" onclick="switchTab('stats')">📊 Stats</button><button class="tab-btn ${activeTab==="entry"?"active":""}" onclick="switchTab('entry')">🎟️ Game Entry</button><button class="tab-btn ${activeTab==="method"?"active":""}" onclick="switchTab('method')">ℹ️ Info</button></div>
     ${showH?`<div class="header-controls">
@@ -1242,7 +1287,7 @@ function render(){
     <div class="section"><div class="card"><div class="card-title">🎰 ${bookLabel(prop)} Props — ${metric}</div>
       ${prop.DK_LINE?`<div class="dk-line">Line: ${prop.DK_LINE}</div><div class="dk-odds"><span style="color:#22c55e;font-size:12px">${overOdds?`Over: ${fmtOdds(overOdds)} (${(overImpl*100).toFixed(1)}%)`:"—"}</span><span style="color:#ef4444;font-size:12px">${underOdds?`Under: ${fmtOdds(underOdds)}`:"—"}</span></div>`:`<div class="no-data" style="margin-bottom:8px">No DK line</div>`}
       ${lineNum&&pHasLogs?`<div class="hit-row" style="border-top:1px solid #333;padding-top:8px;margin-top:4px"><span class="hit-key">L5</span><span class="hit-val">${hL5}/5</span></div><div class="hit-row"><span class="hit-key">L10</span><span class="hit-val">${hL10}/10</span></div><div class="hit-row"><span class="hit-key">Season</span><span class="hit-val">${hS}/${allLogs.length} (${sRate!==null?(sRate*100).toFixed(0):"—"}%)${pushS>0?` · ${pushS} push`:""}</span></div>`:""}</div></div>
-    ${edge!==null&&edge>0?`<div class="section dash-full"><div class="confidence" style="background:#22c55e22;border:2px solid #22c55e"><div class="conf-label" style="color:#22c55e">+${(edge*100).toFixed(1)}% Edge vs Book</div><div class="conf-edge">Hit rate: ${(sRate*100).toFixed(0)}% · DK implied: ${(overImpl*100).toFixed(0)}%</div></div></div>`:""}
+    ${edge!==null&&edge>0?`<div class="section dash-full"><div class="confidence" style="background:#22c55e22;border:2px solid #22c55e"><div class="conf-label" style="color:#22c55e">+${(edge*100).toFixed(1)}pp historical gap vs book</div><div class="conf-edge">Observed hit rate: ${(sRate*100).toFixed(0)}% · DK implied: ${(overImpl*100).toFixed(0)}%</div></div></div>`:""}
     </div>
     ${pickBanner?`<div class="dash-bottom">${pickBanner}</div>`:""}
     ${dashPropsHTML?`<div class="dash-bottom">${dashPropsHTML}</div>`:""}
@@ -1257,10 +1302,10 @@ function render(){
     <div style="padding:16px"><div style="text-align:center;margin-bottom:16px"><div style="font-size:28px;margin-bottom:4px">🏀</div><div style="color:#eab308;font-weight:800;font-size:16px">How This Dashboard Works</div><div style="color:#9ca3af;font-size:11px;margin-top:4px">Under the hood of the NBA DFS Engine</div></div>
       <div class="card" style="margin-bottom:10px"><div class="card-title">📡 Data Sources</div><div style="font-size:12px;color:#d1d5db;line-height:1.6"><div style="margin-bottom:6px"><span style="color:#eab308;font-weight:700">NBA API</span> — Player game logs, team advanced stats, tonight's schedule.</div><div style="margin-bottom:6px"><span style="color:#eab308;font-weight:700">The Odds API</span> — Live spreads, totals, and player props across 10+ markets.</div><div><span style="color:#eab308;font-weight:700">Google Sheets</span> — Central warehouse. Engine writes 9+ tabs; app reads live.</div></div></div>
       <div class="card" style="margin-bottom:10px"><div class="card-title">⚙️ Calculations</div><div style="font-size:12px;color:#d1d5db;line-height:1.6"><span style="color:#eab308;font-weight:700">Rolling Averages</span> L3/L5/L10/Season · <span style="color:#eab308;font-weight:700">H2H</span> vs opponent · <span style="color:#eab308;font-weight:700">Splits</span> Home/Away · <span style="color:#eab308;font-weight:700">Correlations</span> 2000+ pairs · <span style="color:#eab308;font-weight:700">EV%</span> hit rate vs implied odds · <span style="color:#eab308;font-weight:700">Line Movement</span> snapshot diffs</div></div>
-      <div class="card" style="margin-bottom:10px"><div class="card-title">🤖 AI Picks — Gemini</div><div style="font-size:12px;color:#d1d5db;line-height:1.6">Gemini 2.5 Flash Lite receives 80 players with stats + DK lines. 3-layer injury filter. Returns 14 ranked picks with SMASH/OVER/FADE.</div></div>
+      <div class="card" style="margin-bottom:10px"><div class="card-title">🤖 AI Picks — Gemini</div><div style="font-size:12px;color:#d1d5db;line-height:1.6">AI receives eligible players and quoted market lines. Picks and confidence labels remain experimental; calibration has not been established.</div></div>
       <div class="card" style="margin-bottom:10px"><div class="card-title">💰 Best Bets & 🎫 Slips</div><div style="font-size:12px;color:#d1d5db;line-height:1.6">EV engine compares hit rates to implied odds. Slips combine EV + AI + streaks into conviction-scored parlays.</div></div>
       <div class="card" style="margin-bottom:10px"><div class="card-title">🧊 They're Due</div><div style="font-size:12px;color:#d1d5db;line-height:1.6">Finds cold players with strong season averages and favorable matchups tonight. These are descriptive trends; a rebound is not guaranteed.</div></div>
-      <div class="card" style="margin-bottom:10px"><div class="card-title">📖 Abbreviations</div><div style="font-size:12px;color:#d1d5db;line-height:1.7">PTS — Points · REB — Rebounds · AST — Assists · STL — Steals · BLK — Blocks<br>PRA — Points + Rebounds + Assists · PR — Points + Rebounds · PA — Points + Assists · RA — Rebounds + Assists<br>FG3M — Three-Pointers Made · STOCKS — Steals + Blocks · TOV — Turnovers<br>MIN — Minutes · DD — Double-Double · FPPM — Fantasy Points Per Minute<br>DK_FP — DraftKings Fantasy Points · UD_FP — Underdog Fantasy Points<br>Edge — Historical hit rate minus implied probability, in percentage points<br>SMASH — Highest conviction pick · STRONG — High confidence · LEAN — Moderate confidence<br>L3/L5/L10 — Last 3/5/10 game averages · Seas — Season average<br>H2H — Head-to-Head history vs tonight's opponent<br>DEF_RTG — Defensive Rating (points allowed per 100 possessions) · PACE — Possessions per game</div></div>
+      <div class="card" style="margin-bottom:10px"><div class="card-title">📖 Abbreviations</div><div style="font-size:12px;color:#d1d5db;line-height:1.7">PTS — Points · REB — Rebounds · AST — Assists · STL — Steals · BLK — Blocks<br>PRA — Points + Rebounds + Assists · PR — Points + Rebounds · PA — Points + Assists · RA — Rebounds + Assists<br>FG3M — Three-Pointers Made · STOCKS — Steals + Blocks · TOV — Turnovers<br>MIN — Minutes · DD — Double-Double · FPPM — Fantasy Points Per Minute<br>DK_FP — DraftKings Fantasy Points · UD_FP — Underdog Fantasy Points<br>Edge — Historical hit rate minus implied probability, in percentage points<br>SMASH / STRONG / LEAN — Unvalidated AI labels, not calibrated probabilities<br>L3/L5/L10 — Last 3/5/10 game averages · Seas — Season average<br>H2H — Head-to-Head history vs tonight's opponent<br>DEF_RTG — Defensive Rating (points allowed per 100 possessions) · PACE — Possessions per game</div></div>
       <div class="card" style="margin-bottom:10px;border:1px solid #333"><div class="card-title">🙏 Credits</div><div style="font-size:12px;color:#d1d5db;line-height:1.6"><div>Built by <span style="color:#eab308;font-weight:700">Stephen Krolikowski</span></div><div>AI: <span style="color:#eab308;font-weight:700">Gemini 2.5 Flash Lite</span> · App: <span style="color:#eab308;font-weight:700">Claude</span> by Anthropic</div><div>Engine + dashboard fixes with <span style="color:#eab308;font-weight:700">Codex</span> by OpenAI</div><div>Props: <span style="color:#eab308;font-weight:700">The Odds API</span> · Data: <span style="color:#eab308;font-weight:700">nba_api</span></div></div></div>
       <div style="text-align:center;color:#555;font-size:9px;padding:8px 0 20px">For entertainment & research purposes only.</div>
     </div>
@@ -1283,13 +1328,14 @@ function render(){
 
 function loadAllData(){
   st.loading=true;st.error=null;cache.player=null;cache.sortedLogs=null;resetDerived();render();
-  return Promise.all([fetchSheet("Tonights_Opponent").catch(()=>null),fetchSheet("Player_Stats").catch(()=>null),fetchSheet("DK_Player_Props").catch(()=>[]),fetchSheet("Home_Away_Splits").catch(()=>[]),fetchSheet("Daily_Picks").catch(()=>[]),fetchSheet("Teammate_Correlations").catch(()=>[]),fetchSheet("NBA_Status").catch(()=>[]),fetchSheet("Pick_Performance").catch(()=>[]),fetchSheet("Pick_Performance_Snapshots").catch(()=>[])])
+  return Promise.all([fetchSheet("Tonights_Opponent").catch(()=>null),fetchSheet("Dashboard_Player_Stats").catch(()=>null),fetchSheet("DK_Player_Props").catch(()=>[]),fetchSheet("Home_Away_Splits").catch(()=>[]),fetchSheet("Daily_Picks").catch(()=>[]),fetchSheet("Teammate_Correlations").catch(()=>[]),fetchSheet("NBA_Status").catch(()=>[]),fetchSheet(performanceTabName()).catch(()=>[]),fetchSheet(performanceTabName()+"_Snapshots").catch(()=>[])])
   .then(async ([tonight,stats,props,splits,picks,correlations,status,pickPerformance,pickPerformanceSnaps])=>{
     const after=await fetchSheet("NBA_Status").catch(()=>[]);
     const run=status?.[0]?.RUN_ID;
-    if(run&&(after?.[0]?.RUN_ID!==run||after[0].STATUS==="UPDATING"))throw new Error("Engine update changed during load");
-    if(run&&[tonight,stats,props,splits,correlations].some(rows=>(rows||[]).some(r=>r.RUN_ID!==run)))throw new Error("Mixed engine snapshots");
-    if(!tonight||!stats){st.error="Could not load critical sheets.";st.loading=false;render();return}
+    st.feedStatus=evaluateFeed(normalizeKeys(cleanRows(status)));
+    if(st.feedStatus.usable&&run&&(after?.[0]?.RUN_ID!==run||after[0].STATUS==="UPDATING"))throw new Error("Engine update changed during load");
+    if(st.feedStatus.usable&&run&&[tonight,stats,props,splits,correlations].some(rows=>(rows||[]).some(r=>r.RUN_ID!==run)))throw new Error("Mixed engine snapshots");
+    if(st.feedStatus.usable&&(!tonight||!stats))throw new Error("Required slate feed unavailable. Run the updated engine to publish Tonights_Opponent and Dashboard_Player_Stats.");
     // Apply data cleaning (ported from MLB)
     const today=easternTodayISO();
     const season=seasonForDate(today);
@@ -1300,8 +1346,8 @@ function loadAllData(){
     st.props=st.feedStatus.usable?normalizeKeys(cleanRows(props||[])).filter(r=>rowIsCurrent(r)):[];
     st.splits=st.feedStatus.usable?normalizeKeys(cleanRows(splits||[])).filter(r=>rowIsCurrent(r)):[];
     st.correlations=st.feedStatus.usable?normalizeKeys(cleanRows(correlations||[])).filter(r=>rowIsCurrent(r)):[];
-    st.pickPerformance=normalizeKeys(cleanRows(pickPerformance||[]));
-    st.pickPerformanceSnaps=normalizeKeys(cleanRows(pickPerformanceSnaps||[]));
+    st.pickPerformance=currentPerformanceRows(normalizeKeys(cleanRows(pickPerformance||[])));
+    st.pickPerformanceSnaps=currentPerformanceRows(normalizeKeys(cleanRows(pickPerformanceSnaps||[])),true);
     const cleanPicks=normalizeKeys(cleanRows(picks||[])).map(p=>({
       ...p,
       player: cleanName(p.player||p.PLAYER||p.Player||p.PLAYER_NAME),
@@ -1314,7 +1360,8 @@ function loadAllData(){
     }));
     const tonightNames=new Set(st.tonight.map(p=>normalizePlayerName(p.PLAYER_NAME)).filter(Boolean));
     const latestDate=today;
-    const clearedNames=new Set(st.tonight.filter(p=>String(p.STATUS||p.AVAILABILITY||"UNKNOWN").toUpperCase()==="AVAILABLE").map(p=>normalizePlayerName(p.PLAYER_NAME)));
+    resetDerived();
+    const clearedNames=new Set(st.tonight.filter(p=>playerAvailability(p.PLAYER_NAME)==="AVAILABLE"&&!getLockInfo(p.PLAYER_NAME).started).map(p=>normalizePlayerName(p.PLAYER_NAME)));
     const datePicks=cleanPicks.filter(p=>p.__normDate===today&&tonightNames.has(normalizePlayerName(p.__pickPlayer))&&clearedNames.has(normalizePlayerName(p.__pickPlayer))).sort((a,b)=>toNum(a.rank)-toNum(b.rank));
     const seen=new Set();
     st.aiPicks=datePicks.filter(p=>{
@@ -1367,7 +1414,9 @@ function loadAllData(){
     st.streaks=getStreaks();render();
   }).catch(err=>{
     console.error("❌ Load failed:",err);
-    st.loading=false;st.error="Could not load data. Check Google Sheet sharing settings.";render();
+    st.tonight=[];st.playerStats=[];st.props=[];st.splits=[];st.correlations=[];st.aiPicks=[];st.player="";st.dataVersion++;resetDerived();
+    const message=String(err?.message||"");
+    st.loading=false;st.error=/snapshots|changed during load/.test(message)?"The engine is publishing a new slate. Refresh after it finishes.":message.startsWith("Required slate feed")?message:"Could not load the NBA feeds. Check the engine run and published feed tabs, then retry.";render();
   });
 }
 loadAllData();

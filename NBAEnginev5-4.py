@@ -20,12 +20,12 @@ from nba_api.stats.static import teams
 from run_logger import RunLogger
 import nba_sources
 import nba_injuries
-from nba_readiness import season_for_date, event_is_on_date, validate_market_picks, replace_sheet_values, select_analysis_history, finite_odds_probability, non_push_rate, selection_key
+from nba_readiness import season_for_date, event_is_on_date, validate_market_picks, replace_sheet_values, select_analysis_history, finite_odds_probability, non_push_rate, selection_key, is_actionable_player, dashboard_stats, PERFORMANCE_POLICY
 
 # --- 1. AUTHENTICATION & SETUP ---
 print("Authenticating with Google...")
 SHEET_NAME = 'NBA_Dashboard_Data'
-SHEET_ID = os.environ.get('NBA_SHEET_ID', '12gBgVx_RCsIytjZHjfZWgLtG-R-zcPbYYE-CVFd4EDw')
+SHEET_ID = os.environ.get('NBA_SHEET_ID') or '12gBgVx_RCsIytjZHjfZWgLtG-R-zcPbYYE-CVFd4EDw'
 SNAPSHOT_DATE = "2026-05-04"
 SPORT_LABEL = "NBA"
 ENABLE_FANDUEL_FALLBACK = os.getenv("ENABLE_FANDUEL_FALLBACK", "false").lower() == "true"
@@ -739,6 +739,40 @@ def build_sample_flag_frame(log_df, ref_date=None):
     return pd.DataFrame(rows, columns=cols)
 
 NBA_SEASON = get_nba_season()
+today_str = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d')
+timestamp_pst = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d %I:%M:%S %p %Z')
+print("Fetching tonight's schedule before player statistics...")
+games_list, schedule_source = fetch_scoreboard_games(today_str)
+
+def publish_status(status):
+    try:
+        ws = sh.worksheet('NBA_Status')
+    except gspread.exceptions.WorksheetNotFound:
+        ws = sh.add_worksheet(title='NBA_Status', rows=10, cols=8)
+    replace_sheet_values(ws, [['SLATE_DATE', 'SEASON', 'STATUS', 'GAMES', 'LAST_UPDATED', 'RUN_ID', 'WARNINGS', 'UPDATED_AT_UTC'],
+                              [today_str, NBA_SEASON, status, len(games_list), timestamp_pst, RUN_ID, '; '.join(PUBLICATION_WARNINGS), datetime.now(pytz.UTC).isoformat()]])
+    runlog.record_write('NBA_Status', 1)
+
+if schedule_source == 'unavailable':
+    raise RuntimeError('Schedule unavailable; cannot determine whether tonight has games')
+if not games_list:
+    # Empty and unavailable are different states. Expire actionable data on off days.
+    for tab, headers in {
+        'Tonights_Opponent': SHEET_SCHEMAS['Tonights_Opponent']['required'],
+        'DK_Player_Props': SHEET_SCHEMAS['DK_Player_Props']['required'],
+        'Dashboard_Player_Stats': ['PLAYER_NAME', 'SEASON', 'GAME_DATE'],
+        'Prop_EV': ['PLAYER_NAME', 'METRIC', 'DK_LINE', 'LAST_UPDATED'],
+        'Line_Movers': ['PLAYER_NAME', 'METRIC', 'LAST_UPDATED'],
+    }.items():
+        try:
+            ws = sh.worksheet(tab)
+        except gspread.exceptions.WorksheetNotFound:
+            ws = sh.add_worksheet(title=tab, rows=100, cols=len(headers))
+        replace_sheet_values(ws, [headers])
+        runlog.record_write(tab, 0)
+    publish_status('NO_GAMES')
+    raise SystemExit(0)
+publish_status('UPDATING')
 
 # --- 2. FETCH PLAYER DATA ---
 print(f"Fetching Player Game Logs ({NBA_SEASON} Season + Play-In + Playoffs)...")
@@ -879,9 +913,7 @@ df_player_final['GAME_DATE'] = df_player_final['GAME_DATE'].dt.strftime('%Y-%m-%
 
 # --- 4.5 ACTIVE TONIGHT FILTER ---
 print("Fetching tonight's schedule...")
-today_str = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d')
 opp_map = {}
-games_list, schedule_source = fetch_scoreboard_games(today_str)
 for game in games_list:
     home = game['homeTeam']['teamTricode']
     away = game['awayTeam']['teamTricode']
@@ -895,6 +927,7 @@ if games_list:
         roster = commonallplayers.CommonAllPlayers(season=NBA_SEASON, is_only_current_season=1, timeout=20).get_data_frames()[0]
     except Exception:
         roster = nba_sources.current_roster(games_list)
+    roster = nba_sources.align_roster_names(roster, df_player_final)
     current_teams = roster.loc[roster['TEAM_ABBREVIATION'].isin(opp_map), ['DISPLAY_FIRST_LAST', 'TEAM_ABBREVIATION']].copy()
     current_teams.columns = ['PLAYER_NAME', 'CURRENT_TEAM']
     if current_teams.empty:
@@ -917,34 +950,6 @@ timestamp_pst = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d %I:
 df_player_final['LAST_UPDATED'] = timestamp_pst
 df_player_upload['LAST_UPDATED'] = timestamp_pst
 
-def publish_status(status):
-    try:
-        ws = sh.worksheet('NBA_Status')
-    except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title='NBA_Status', rows=10, cols=8)
-    replace_sheet_values(ws, [['SLATE_DATE', 'SEASON', 'STATUS', 'GAMES', 'LAST_UPDATED', 'RUN_ID', 'WARNINGS'],
-                              [today_str, NBA_SEASON, status, len(games_list), timestamp_pst, RUN_ID, '; '.join(PUBLICATION_WARNINGS)]])
-    runlog.record_write('NBA_Status', 1)
-
-if schedule_source == 'unavailable':
-    raise RuntimeError('Schedule unavailable; cannot determine whether tonight has games')
-if not games_list:
-    # Empty and unavailable are different states. Expire actionable data on off days.
-    for tab, headers in {
-        'Tonights_Opponent': SHEET_SCHEMAS['Tonights_Opponent']['required'],
-        'DK_Player_Props': SHEET_SCHEMAS['DK_Player_Props']['required'],
-        'Prop_EV': ['PLAYER_NAME', 'METRIC', 'DK_LINE', 'LAST_UPDATED'],
-        'Line_Movers': ['PLAYER_NAME', 'METRIC', 'LAST_UPDATED'],
-    }.items():
-        try:
-            ws = sh.worksheet(tab)
-        except gspread.exceptions.WorksheetNotFound:
-            ws = sh.add_worksheet(title=tab, rows=100, cols=len(headers))
-        replace_sheet_values(ws, [headers])
-        runlog.record_write(tab, 0)
-    publish_status('NO_GAMES')
-    raise SystemExit(0)
-publish_status('UPDATING')
 
 # --- 5. FETCH TEAM ADVANCED STATS ---
 print("Fetching Team Advanced Stats...")
@@ -1100,8 +1105,8 @@ if injury_people:
     df_injuries=pd.DataFrame(injury_people)[['PLAYER_NAME','AVAILABILITY','INJURY_SOURCE','INJURY_REPORT_TIME','INJURY_DETAIL','MINUTES_RESTRICTED']]
     df_tonight_sheet=df_tonight_sheet.merge(df_injuries,on='PLAYER_NAME',how='left')
     df_tonight_sheet['STATUS']=df_tonight_sheet['AVAILABILITY']
-    if (df_tonight_sheet['STATUS']!='AVAILABLE').any():
-        PUBLICATION_WARNINGS.append('Some player availability is unverified or restricted; affected picks withheld')
+    if (df_tonight_sheet['STATUS']=='UNKNOWN').any():
+        PUBLICATION_WARNINGS.append('Some player availability is unverified; affected picks withheld')
 
 df_tonight_sheet['LAST_UPDATED'] = timestamp_pst
 df_tonight_sheet = df_tonight_sheet.drop_duplicates(subset=['PLAYER_NAME'])
@@ -1817,7 +1822,7 @@ if GEMINI_API_KEY and len(games_list) > 0:
         for _, row in player_pool.iterrows():
             raw_status = first_present(row, status_cols, default="")
             status_clean = normalize_status(raw_status)
-            remove_player = status_clean in HARD_OUT or bool(row.get('MINUTES_RESTRICTED', False))
+            remove_player = not is_actionable_player(row, datetime.now(pytz.UTC))
             keep_mask.append(not remove_player)
             if remove_player and len(removed_debug) < 20:
                 removed_debug.append({
@@ -2145,6 +2150,9 @@ IMPORTANT: Return ONLY the JSON array. No markdown, no preamble."""
         print(f" - picks after post-filter: {len(df_picks)}")
         df_picks = pd.DataFrame(validate_market_picks(
             df_picks.to_dict('records'), df_props.to_dict('records'), normalizePlayerName))
+        if not df_picks.empty:
+            starts = pd.to_datetime(df_picks['COMMENCE_TIME'], utc=True, errors='coerce')
+            df_picks = df_picks[starts.notna() & (starts > pd.Timestamp.now(tz='UTC'))].copy()
         if df_picks.empty:
             raise RuntimeError('No picks matched a priced live market; no picks published')
 
@@ -2155,6 +2163,13 @@ IMPORTANT: Return ONLY the JSON array. No markdown, no preamble."""
         df_picks.loc[df_picks['player'].map(normalizePlayerName).isin(prior_names), 'confidence'] = 'LEAN'
         df_picks['DATE'] = today_str
         df_picks['RUN_ID'] = RUN_ID
+        df_picks['SEASON'] = NBA_SEASON
+        df_picks['PERFORMANCE_POLICY'] = PERFORMANCE_POLICY
+        df_picks['MARKET_VALIDATED'] = True
+        df_picks['PUBLISHED_AT_UTC'] = datetime.now(pytz.UTC).isoformat()
+        context_by_name = {normalizePlayerName(row['PLAYER_NAME']):row for row in df_tonight_sheet.to_dict('records')}
+        for field in ['BASELINE_TYPE', 'ANALYSIS_SEASON', 'CURRENT_GAMES', 'PRIOR_GAMES']:
+            df_picks[field] = df_picks['player'].map(lambda name: context_by_name.get(normalizePlayerName(name), {}).get(field, ''))
         df_picks['RUN_TIME'] = timestamp_pst
         df_picks['RUN_NUMBER'] = today_run_number
         df_picks['LAST_UPDATED'] = timestamp_pst
@@ -2195,7 +2210,7 @@ IMPORTANT: Return ONLY the JSON array. No markdown, no preamble."""
             dropped_prop_caps.extend(duplicate_drop_msgs)
         df_picks = pd.DataFrame(dedup_keep)
 
-        col_order = ['DATE', 'RUN_ID', 'RUN_NUMBER', 'RUN_TIME', 'rank', 'game', 'matchup', 'game_time', 'player', 'team',
+        col_order = ['DATE', 'RUN_ID', 'RUN_NUMBER', 'RUN_TIME', 'SEASON', 'PERFORMANCE_POLICY', 'MARKET_VALIDATED', 'PUBLISHED_AT_UTC', 'BASELINE_TYPE', 'ANALYSIS_SEASON', 'CURRENT_GAMES', 'PRIOR_GAMES', 'rank', 'game', 'matchup', 'game_time', 'player', 'team',
                      'opponent', 'prop_type', 'line', 'lean', 'confidence', 'BOOK', 'ODDS', 'EVENT_ID', 'COMMENCE_TIME', 'QUOTE_TIME',
                      'rationale', 'reasoning', 'injury_context', 'spread', 'total', 'DATA_SOURCE', 'source',
                      'CONSENSUS_COUNT', 'CONSENSUS_RUNS', 'CONSENSUS_TAG',
@@ -2232,9 +2247,15 @@ IMPORTANT: Return ONLY the JSON array. No markdown, no preamble."""
             print("⚠️ All picks filtered out.")
 
     except json.JSONDecodeError as e:
+        df_picks = pd.DataFrame()
+        PUBLICATION_WARNINGS.append('AI pick generation failed; no picks published from this run')
+        runlog.warn('AI JSON response invalid')
         print(f"❌ JSON parse failed: {e}")
         print(f"Raw: {raw[:500]}")
     except Exception as e:
+        df_picks = pd.DataFrame()
+        PUBLICATION_WARNINGS.append('AI pick generation failed; no picks published from this run')
+        runlog.warn(f'AI pick generation failed: {type(e).__name__}')
         print(f"❌ AI Picks failed: {e}")
 else:
     if not GEMINI_API_KEY:
@@ -2291,7 +2312,7 @@ def safe_upload(sheet_name, df):
     df = df.copy()
     df['SLATE_DATE'] = today_str
     df['RUN_ID'] = RUN_ID
-    df['SEASON'] = NBA_SEASON if sheet_name != 'Player_Stats' else df['SEASON']
+    df['SEASON'] = df['SEASON'] if sheet_name in {'Player_Stats', 'Dashboard_Player_Stats'} else NBA_SEASON
     validate_sheet_schema(sheet_name, df)
     try:
         try:
@@ -2299,6 +2320,8 @@ def safe_upload(sheet_name, df):
         except gspread.exceptions.WorksheetNotFound:
             ws = sh.add_worksheet(title=sheet_name, rows=1000, cols=150)
         replace_sheet_values(ws, [df.columns.tolist()] + [[clean_cell(v) for v in row] for row in df.values.tolist()])
+        if sheet_name == 'Dashboard_Player_Stats':
+            ws.resize(rows=max(2, len(df)+1), cols=len(df.columns))
         print(f"✅ Successfully updated '{sheet_name}'")
         try:
             runlog.record_write(sheet_name, len(df))
@@ -2386,6 +2409,7 @@ def append_upload(sheet_name, df):
         raise
 
 safe_upload('Player_Stats', df_player_upload)
+safe_upload('Dashboard_Player_Stats', dashboard_stats(df_player_upload, df_tonight_sheet))
 safe_upload('Team_Advanced', df_team_final)
 safe_upload('Tonights_Opponent', df_tonight_sheet)
 safe_upload('Teammate_Correlations', df_correlation)

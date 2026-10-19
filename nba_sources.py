@@ -7,6 +7,7 @@ import json
 import os
 import requests
 from nba_api.stats.static import teams
+from nba_injuries import norm
 
 BASE='https://site.api.espn.com/apis/site/v2/sports/basketball/nba'
 ALIASES={'GS':'GSW','NY':'NYK','NO':'NOP','SA':'SAS','UTAH':'UTA','WSH':'WAS','PHO':'PHX'}
@@ -63,6 +64,14 @@ def current_roster(games):
     with ThreadPoolExecutor(max_workers=4) as pool:return pd.DataFrame([r for part in pool.map(fetch,abbreviations) for r in part])
 
 
+def align_roster_names(roster, history):
+    out=roster.copy()
+    known=history.drop_duplicates('PLAYER_NAME').set_index('PLAYER_NAME').index
+    lookup={norm(name):name for name in known}
+    out['DISPLAY_FIRST_LAST']=out['DISPLAY_FIRST_LAST'].map(lambda name:lookup.get(norm(name),name))
+    return out
+
+
 def final_boxes(date):
     """Return only complete final boxes, including explicitly listed DNPs."""
     output=[]
@@ -116,7 +125,14 @@ def refresh_seed(existing,date,season):
     fresh=pd.DataFrame([r for part in parts for r in part])
     if fresh.empty:return existing.copy()
     # Resolve NBA IDs from the existing seed; ESPN IDs remain separate.
-    lookup=existing.dropna(subset=['PLAYER_ID']).drop_duplicates('PLAYER_NAME').set_index('PLAYER_NAME')['PLAYER_ID'].to_dict()
-    fresh['PLAYER_ID']=fresh['PLAYER_NAME'].map(lookup)
+    known=existing.dropna(subset=['PLAYER_ID']).copy()
+    known['PERSON_KEY']=known['PLAYER_NAME'].map(norm)
+    if (known.groupby('PERSON_KEY')['PLAYER_ID'].nunique()>1).any():
+        raise ValueError('Ambiguous normalized player identity in historical seed')
+    known=known.drop_duplicates('PERSON_KEY',keep='last').set_index('PERSON_KEY')
+    fresh['PERSON_KEY']=fresh['PLAYER_NAME'].map(norm)
+    fresh['PLAYER_ID']=fresh['PERSON_KEY'].map(known['PLAYER_ID'])
+    fresh['PLAYER_NAME']=fresh['PERSON_KEY'].map(known['PLAYER_NAME']).fillna(fresh['PLAYER_NAME'])
     fresh['PLAYER_ID']=fresh['PLAYER_ID'].fillna(-pd.to_numeric(fresh['ESPN_PLAYER_ID'],errors='coerce'))
+    fresh=fresh.drop(columns='PERSON_KEY')
     return pd.concat([existing,fresh],ignore_index=True).drop_duplicates(['PLAYER_NAME','GAME_DATE','TEAM_ABBREVIATION'],keep='last')

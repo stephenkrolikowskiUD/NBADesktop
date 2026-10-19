@@ -1,0 +1,13 @@
+{
+  "original_sha256": "a19f958551fe48fe6e1c99f3fe4d0f51d43b9126c2ce3558b6ef6b8581202bbc",
+  "original_rows": 843,
+  "deduplicated_rows": 709,
+  "duplicate_rows_removed": 134,
+  "verified_regrades_applied": 5,
+  "nonstandard_lines_flagged": 44,
+  "performance_eligible_rows": 0,
+  "claude_reported_regrades": 10,
+  "reconciliation_status": "Claude's row-level list was not provided; overlap with the five verified corrections cannot be established.",
+  "line_policy": "Unsupported lines are flagged and excluded from performance, not silently deleted based on numeric format. No historical entry quote can be verified.",
+  "destination": "Local research exports only; no live Sheet tab was created or modified."
+}

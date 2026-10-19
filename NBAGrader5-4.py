@@ -17,7 +17,7 @@ from google.oauth2.service_account import Credentials
 from nba_api.stats.endpoints import leaguegamelog
 from run_logger import RunLogger
 import nba_sources
-from nba_readiness import box_metrics, backup_values
+from nba_readiness import box_metrics, backup_values, performance_eligibility, season_for_date, selection_key, replace_sheet_values, PERFORMANCE_POLICY
 
 def get_gspread_client():
     scopes = [
@@ -42,7 +42,7 @@ def get_gspread_client():
 gc = get_gspread_client()
 
 SHEET_NAME = 'NBA_Dashboard_Data'
-SHEET_ID = '12gBgVx_RCsIytjZHjfZWgLtG-R-zcPbYYE-CVFd4EDw'
+SHEET_ID = os.environ.get('NBA_SHEET_ID') or '12gBgVx_RCsIytjZHjfZWgLtG-R-zcPbYYE-CVFd4EDw'
 SNAPSHOT_DATE = "2026-05-04"
 sh = gc.open_by_key(SHEET_ID)
 print(f"✅ Connected to Google Sheet: {SHEET_ID}")
@@ -52,6 +52,9 @@ RETRY_DNP_LOOKBACK_DAYS = 7
 eastern = pytz.timezone('US/Eastern')
 now_est = datetime.now(eastern)
 today_str = now_est.strftime('%Y-%m-%d')
+PERFORMANCE_SEASON = season_for_date(today_str)
+PERFORMANCE_TAB = 'Pick_Performance_' + PERFORMANCE_SEASON.replace('-', '_')
+PERFORMANCE_SNAPSHOT_TAB = PERFORMANCE_TAB + '_Snapshots'
 timestamp_est = now_est.strftime('%Y-%m-%d %I:%M:%S %p EST')
 PICK_PERF_MIN_SAMPLE = 25
 PICK_PERF_STANDARD_ODDS = -115
@@ -65,6 +68,7 @@ PICK_PERF_TIME_WINDOWS = {
 }
 PICK_PERF_SNAPSHOT_WINDOWS = ('all_time', 'last_30d')
 PICK_PERF_DIMENSIONS = (
+    'BASELINE_TYPE',
     'confidence_norm',
     'prop_type_norm',
     'lean_norm',
@@ -158,6 +162,7 @@ def normalize_person_name(name):
     text = text.lower()
     text = re.sub(r"[’'`\\.]", "", text)
     text = re.sub(r"[^a-z0-9]+", " ", text)
+    text = re.sub(r'\b(jr|sr|ii|iii|iv)\b', '', text)
     return re.sub(r"\s+", " ", text).strip()
 
 def find_box_score(box_lookup, player, date):
@@ -245,9 +250,9 @@ PICK_PERFORMANCE_COLUMNS = [
     'ROI_FLAT', 'ROI_PER_PICK',
     'AVG_CLV_EDGE', 'CLV_POSITIVE_RATE', 'CLV_POS_HIT_RATE', 'CLV_NEG_HIT_RATE',
     'WILSON_LOWER_95', 'MIN_SAMPLE_FLAG',
-    'LAST_UPDATED',
+    'LAST_UPDATED', 'SEASON', 'PERFORMANCE_POLICY', 'ROI_METHOD',
 ]
-PICK_PERFORMANCE_SNAPSHOT_COLUMNS = ['SNAPSHOT_DATE', 'METRIC_KEY', 'METRIC_VALUE', 'N_PICKS', 'TIME_WINDOW']
+PICK_PERFORMANCE_SNAPSHOT_COLUMNS = ['SNAPSHOT_DATE', 'METRIC_KEY', 'METRIC_VALUE', 'N_PICKS', 'TIME_WINDOW', 'SEASON', 'PERFORMANCE_POLICY']
 
 def normalize_prop_metric(metric):
     text = str(metric or '').strip().upper()
@@ -270,8 +275,7 @@ def pick_perf_clean_cell(val):
     return val
 
 def pick_perf_safe_upload(spreadsheet, sheet_name, df):
-    if df is None or df.empty:
-        print(f"   ⏭️  {sheet_name}: No data — skipped")
+    if df is None:
         return False
     df_clean = df.copy().replace([np.inf, -np.inf], np.nan).fillna('')
     values = [df_clean.columns.tolist()] + [
@@ -281,12 +285,11 @@ def pick_perf_safe_upload(spreadsheet, sheet_name, df):
     try:
         try:
             ws_out = spreadsheet.worksheet(sheet_name)
-            ws_out.clear()
         except gspread.exceptions.WorksheetNotFound:
             ws_out = spreadsheet.add_worksheet(title=sheet_name, rows=max(len(values), 100), cols=max(len(df_clean.columns), 26))
         if ws_out.row_count < len(values) or ws_out.col_count < len(df_clean.columns):
             ws_out.resize(rows=max(len(values), ws_out.row_count), cols=max(len(df_clean.columns), ws_out.col_count))
-        ws_out.update(values, value_input_option='RAW')
+        replace_sheet_values(ws_out, values)
         print(f"   ✅ {sheet_name}: {len(df_clean)} rows × {len(df_clean.columns)} cols")
         return True
     except Exception as e:
@@ -333,8 +336,12 @@ def pick_perf_prepare_df(df_all):
     if df_all is None or df_all.empty or 'HIT' not in df_all.columns:
         return pd.DataFrame()
     df = df_all[df_all['HIT'].isin(['YES', 'NO', 'PUSH', 'DNP'])].copy()
+    eligible = [performance_eligibility(row, PERFORMANCE_SEASON)[0] for row in df.to_dict('records')]
+    df = df.loc[eligible].copy()
     if df.empty:
         return df
+    df['selection_identity'] = [selection_key(row, normalize_person_name) for row in df.to_dict('records')]
+    df = df.drop_duplicates('selection_identity', keep='first')
     idx = df.index
     df['player_norm'] = df.get('player', pd.Series('', index=idx)).map(normalize_person_name)
     df['prop_type_norm'] = df.get('prop_type', pd.Series('', index=idx)).map(normalize_prop_metric)
@@ -342,7 +349,7 @@ def pick_perf_prepare_df(df_all):
     df['confidence_norm'] = df.get('confidence', pd.Series('', index=idx)).map(normalize_confidence)
     df['clv_open_f'] = pd.to_numeric(df.get('CLV_OPEN_LINE', pd.Series(np.nan, index=idx)), errors='coerce')
     df['clv_latest_f'] = pd.to_numeric(df.get('CLV_LATEST_LINE', pd.Series(np.nan, index=idx)), errors='coerce')
-    df['clv_edge'] = np.where(df['lean_norm'] == 'UNDER', df['clv_open_f'] - df['clv_latest_f'], df['clv_latest_f'] - df['clv_open_f'])
+    df['clv_edge'] = np.nan
     df['clv_edge'] = pd.to_numeric(df['clv_edge'], errors='coerce')
     df['clv_bucket'] = np.where(df['clv_edge'].isna(), 'unknown', np.where(df['clv_edge'] > 0, 'positive', np.where(df['clv_edge'] < 0, 'negative', 'flat')))
     df['consensus_bucket'] = pd.to_numeric(df.get('CONSENSUS_COUNT', pd.Series(1, index=idx)), errors='coerce').fillna(1).astype(int)
@@ -364,11 +371,13 @@ def pick_perf_metrics_row(df_slice, dim_type, dim_value, window_name):
     n_misses = int((df_slice['HIT'] == 'NO').sum())
     n_pushes = int((df_slice['HIT'] == 'PUSH').sum())
     n_dnp = int((df_slice['HIT'] == 'DNP').sum())
-    n_decisive = n_picks - n_dnp
+    n_decisive = n_hits + n_misses
     hit_rate = pick_perf_rate(n_hits, n_misses)
     hit_rate_raw = n_hits / n_decisive if n_decisive > 0 else np.nan
-    roi_flat = (n_hits * (100 / abs(PICK_PERF_STANDARD_ODDS)) - n_misses) * 100
-    roi_per_pick = roi_flat / n_decisive if n_decisive > 0 else np.nan
+    profits = [((100 / abs(float(row['ODDS']))) if float(row['ODDS']) < 0 else float(row['ODDS']) / 100) if row['HIT'] == 'YES' else -1 if row['HIT'] == 'NO' else 0 for row in df_slice.to_dict('records')]
+    roi_flat = sum(profits) * 100
+    settled = n_hits + n_misses + n_pushes
+    roi_per_pick = roi_flat / settled if settled > 0 else np.nan
     clv_numeric = df_slice.dropna(subset=['clv_edge'])
     clv_pos = df_slice[df_slice['clv_edge'] > 0]
     clv_neg = df_slice[df_slice['clv_edge'].notna() & (df_slice['clv_edge'] <= 0)]
@@ -401,6 +410,9 @@ def pick_perf_metrics_row(df_slice, dim_type, dim_value, window_name):
         'WILSON_LOWER_95': round(wilson_lower_bound(wilson_p, wilson_n), 3),
         'MIN_SAMPLE_FLAG': bool(n_decisive >= PICK_PERF_MIN_SAMPLE),
         'LAST_UPDATED': timestamp_est,
+        'SEASON': PERFORMANCE_SEASON,
+        'PERFORMANCE_POLICY': PERFORMANCE_POLICY,
+        'ROI_METHOD': 'EQUAL_UNIT_RECORDED_ODDS',
     }
 
 def pick_perf_window_df(df, window_name, days, today):
@@ -450,7 +462,7 @@ def build_snapshot_rows(metrics_df, snapshot_date):
 
 def snapshot_already_exists(spreadsheet, snapshot_date):
     try:
-        ws_snap = spreadsheet.worksheet('Pick_Performance_Snapshots')
+        ws_snap = spreadsheet.worksheet(PERFORMANCE_SNAPSHOT_TAB)
         rows = ws_snap.get_all_records()
     except gspread.exceptions.WorksheetNotFound:
         return False
@@ -519,15 +531,18 @@ def print_pick_performance_summary(metrics_df, sport):
 def run_pick_performance_section(df_all, sport):
     metrics_df, prepared_df = build_pick_performance_metrics(df_all)
     if prepared_df.empty:
-        print("\n📊 Pick_Performance: no graded picks to analyze.")
+        pick_perf_safe_upload(sh, PERFORMANCE_TAB, metrics_df)
+        print("\n📊 No eligible current-season market-provenance results yet.")
         return
-    wrote_perf = pick_perf_safe_upload(sh, 'Pick_Performance', metrics_df)
+    wrote_perf = pick_perf_safe_upload(sh, PERFORMANCE_TAB, metrics_df)
     snapshot_date = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d')
     if snapshot_already_exists(sh, snapshot_date):
         print(f"   ⏭️  Pick_Performance_Snapshots: snapshot already exists for {snapshot_date}")
     else:
         snapshot_df = pd.DataFrame(build_snapshot_rows(metrics_df, snapshot_date), columns=PICK_PERFORMANCE_SNAPSHOT_COLUMNS)
-        pick_perf_append_upload(sh, 'Pick_Performance_Snapshots', snapshot_df)
+        snapshot_df['SEASON'] = PERFORMANCE_SEASON
+        snapshot_df['PERFORMANCE_POLICY'] = PERFORMANCE_POLICY
+        pick_perf_append_upload(sh, PERFORMANCE_SNAPSHOT_TAB, snapshot_df)
     print_pick_performance_summary(metrics_df, sport)
     if wrote_perf:
         print("   📈 Pick_Performance written.")
@@ -622,16 +637,8 @@ for idx, pick in ungraded.iterrows():
     sheet_row = int(idx) + 2  # idx is 0-based from data rows, +1 for header, +1 for 1-index
 
     if box is None:
-        if not date_has_logs:
-            print(f"   ⏳ {player} ({date}) — logs for this date are not available yet; leaving ungraded for retry")
-            continue
-        # Player didn't play (DNP, injury, etc.)
-        updates.append({'range': f'{col_letter(actual_col)}{sheet_row}', 'value': 'DNP'})
-        updates.append({'range': f'{col_letter(hit_col)}{sheet_row}', 'value': 'DNP'})
-        if result_col is not None:
-            updates.append({'range': f'{col_letter(result_col)}{sheet_row}', 'value': 'DNP'})
-        dnp += 1
-        print(f"   ⬜ {player} ({date}) — DNP / No box score")
+        not_found += 1
+        print(f"   ⏳ {player} ({date}) — no verified player box; leaving pending")
         continue
 
     if box.get('DNP') is True:

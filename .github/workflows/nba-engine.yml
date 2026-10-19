@@ -12,6 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
+      NBA_SHEET_ID: ${{ vars.NBA_SHEET_ID }}
+      NBA_BACKUP_DIR: nba_backups
       ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
@@ -32,3 +34,12 @@ jobs:
 
       - name: Run NBA engine
         run: python -u NBAEnginev5-4.py
+
+      - name: Save Sheet backups
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nba-engine-backups-${{ github.run_id }}-${{ github.run_attempt }}
+          path: nba_backups/
+          retention-days: 7
+          if-no-files-found: ignore
