@@ -20,7 +20,7 @@ from nba_api.stats.static import teams
 from run_logger import RunLogger
 import nba_sources
 import nba_injuries
-from nba_readiness import season_for_date, event_is_on_date, validate_market_picks, replace_sheet_values, select_analysis_history, finite_odds_probability, non_push_rate, selection_key, is_actionable_player, dashboard_stats, PERFORMANCE_POLICY
+from nba_readiness import season_for_date, event_is_on_date, validate_market_picks, replace_sheet_values, select_analysis_history, finite_odds_probability, non_push_rate, selection_key, is_actionable_player, dashboard_stats, PERFORMANCE_POLICY, resolve_slate
 
 # --- 1. AUTHENTICATION & SETUP ---
 print("Authenticating with Google...")
@@ -738,11 +738,10 @@ def build_sample_flag_frame(log_df, ref_date=None):
         })
     return pd.DataFrame(rows, columns=cols)
 
-NBA_SEASON = get_nba_season()
-today_str = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d')
+today_str, games_list, schedule_source = resolve_slate(os.environ.get('NBA_SLATE_DATE', 'next'), datetime.now(pytz.UTC), fetch_scoreboard_games)
+NBA_SEASON = season_for_date(today_str)
 timestamp_pst = datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d %I:%M:%S %p %Z')
-print("Fetching tonight's schedule before player statistics...")
-games_list, schedule_source = fetch_scoreboard_games(today_str)
+print(f"📅 Target NBA slate: {today_str} ({len(games_list)} scheduled games)")
 
 def publish_status(status):
     try:
@@ -784,17 +783,26 @@ PLAYER_LOG_NUMERIC_COLS = ['PLAYER_ID', 'MIN', 'PTS', 'REB', 'AST', 'STL', 'BLK'
 existing_player_logs = load_existing_player_logs('Player_Stats', PLAYER_LOG_BASE_COLS, PLAYER_LOG_NUMERIC_COLS)
 is_github_actions = os.environ.get('GITHUB_ACTIONS', '').lower() == 'true'
 df_log_parts = []
-for season_type in ['Regular Season', 'PlayIn', 'Playoffs']:
+public_logs_ready = False
+log_source = os.environ.get('NBA_PLAYER_LOG_SOURCE', 'espn' if is_github_actions else 'nba').strip().lower()
+if log_source == 'espn' and not existing_player_logs.empty:
+    try:
+        df_logs_api = nba_sources.refresh_seed(existing_player_logs, datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d'), NBA_SEASON)
+        public_logs_ready = True
+        print('✅ Refreshed seeded history through ESPN final boxes; skipping stats.nba.com on this runner')
+    except Exception as e:
+        runlog.warn(f'ESPN history refresh unavailable: {type(e).__name__}; trying NBA Stats')
+for season_type in ([] if public_logs_ready else ['Regular Season', 'PlayIn', 'Playoffs']):
     try:
         df_log_parts.append(fetch_league_gamelog_df(NBA_SEASON, season_type))
     except Exception as e:
         runlog.warn(f'{season_type} game logs unavailable')
-if not df_log_parts:
+if not public_logs_ready and not df_log_parts:
     if existing_player_logs.empty:
         raise RuntimeError('Fresh NBA logs unavailable and no historical seed is configured.')
     df_logs_api = nba_sources.refresh_seed(existing_player_logs, datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d'), NBA_SEASON)
     PUBLICATION_WARNINGS.append('NBA Stats unavailable; game logs refreshed through ESPN final boxes')
-else:
+elif not public_logs_ready:
     df_logs_api = pd.concat(df_log_parts, ignore_index=True)
 if 'GAME_OPP' not in df_logs_api.columns:
     df_logs_api['GAME_OPP'] = df_logs_api['MATCHUP'].astype(str).str[-3:]
@@ -885,7 +893,7 @@ for m in metrics:
         rolling_columns[f'L{w}_{m}'] = grouped[m].transform(lambda x: x.rolling(window=w, min_periods=1).mean()).round(2)
 df_logs = pd.concat([df_logs, pd.DataFrame(rolling_columns, index=df_logs.index)], axis=1)
 
-df_sample_flags = build_sample_flag_frame(df_logs[df_logs['SEASON'] == NBA_SEASON])
+df_sample_flags = build_sample_flag_frame(df_logs[df_logs['SEASON'] == NBA_SEASON], ref_date=today_str)
 if not df_sample_flags.empty:
     df_logs = df_logs.merge(df_sample_flags, on=['PLAYER_ID', 'PLAYER_NAME'], how='left')
     df_logs['LIMITED_SAMPLE'] = df_logs['LIMITED_SAMPLE'].fillna(False)
@@ -1074,7 +1082,7 @@ if not df_odds.empty:
     df_tonight_sheet = df_tonight_sheet.merge(df_oo, on='TONIGHT_OPP', how='left')
 
 now_est = datetime.now(pytz.timezone('US/Eastern'))
-yesterday_str = (pd.Timestamp(now_est.date()) - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
+yesterday_str = (pd.Timestamp(today_str) - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
 team_last_game = df_logs.sort_values('GAME_DATE').groupby('TEAM_ABBREVIATION')['GAME_DATE'].max().astype(str).to_dict() if not df_logs.empty else {}
 df_tonight_sheet['B2B'] = df_tonight_sheet['TEAM_ABBREVIATION'].map(lambda t: str(team_last_game.get(t, '')) == yesterday_str)
 
@@ -1983,7 +1991,7 @@ if GEMINI_API_KEY and len(games_list) > 0:
         valid_player_name_map = {normalizePlayerName(n): n for n in active_players_for_gemini['PLAYER_NAME'].tolist() if clean_name(n)}
 
         season_phase = get_nba_season_phase(today_str, games_list)
-        prompt = f"""You are an expert NBA props analyst. Today is {today_str}. Season {NBA_SEASON}. Use only the supplied current slate.
+        prompt = f"""You are an expert NBA props analyst. Target slate date: {today_str}. Analysis generated {datetime.now(pytz.UTC).isoformat()}. Season {NBA_SEASON}. Use only the supplied target slate.
 
 TONIGHT'S GAMES:
 {games_str}

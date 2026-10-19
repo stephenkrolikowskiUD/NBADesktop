@@ -11,9 +11,24 @@ import numpy as np
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
-from nba_readiness import performance_eligibility,dashboard_stats,PERFORMANCE_POLICY,selection_key
+from nba_readiness import performance_eligibility,dashboard_stats,PERFORMANCE_POLICY,selection_key,resolve_slate
 
 class TrackingTests(unittest.TestCase):
+    def test_next_slate_skips_monday_for_opening_tuesday(self):
+        now=datetime(2026,10,19,16,tzinfo=timezone.utc)
+        game={'gameTimeUTC':'2026-10-20T19:00:00Z','gameStatus':1}
+        calls=[]
+        def schedule(day):
+            calls.append(day);return ([game] if day=='2026-10-20' else []),'fixture'
+        day,games,source=resolve_slate('next',now,schedule)
+        self.assertEqual(day,'2026-10-20');self.assertEqual(games,[game]);self.assertEqual(calls,['2026-10-19','2026-10-20'])
+    def test_explicit_slate_date_and_invalid_past(self):
+        now=datetime(2026,10,19,16,tzinfo=timezone.utc)
+        day,games,source=resolve_slate('2026-10-20',now,lambda date:([],'fixture'))
+        self.assertEqual(day,'2026-10-20')
+        with self.assertRaises(ValueError):resolve_slate('2026-10-18',now,lambda date:([],'fixture'))
+    def test_unknown_schedule_cannot_be_skipped(self):
+        with self.assertRaises(RuntimeError):resolve_slate('next',datetime(2026,10,19,tzinfo=timezone.utc),lambda date:([],'unavailable'))
     def market(self,**changes):
         row={'DATE':'2026-10-20','player':'Example','prop_type':'PTS','lean':'OVER','line':20.5,'BOOK':'draftkings','ODDS':150,'EVENT_ID':'event',
              'MARKET_VALIDATED':True,'QUOTE_TIME':'2026-10-20T20:00:00Z','PUBLISHED_AT_UTC':'2026-10-20T20:01:00Z','COMMENCE_TIME':'2026-10-20T23:00:00Z',

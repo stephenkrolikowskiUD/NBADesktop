@@ -2,6 +2,12 @@ name: NBA Engine
 
 on:
   workflow_dispatch:
+    inputs:
+      slate_date:
+        description: 'Slate: next, today, or YYYY-MM-DD (opening day: 2026-10-20)'
+        required: false
+        default: 'next'
+        type: string
 
 concurrency:
   group: nba-sheet-writer
@@ -12,6 +18,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
+      NBA_SLATE_DATE: ${{ inputs.slate_date || 'next' }}
       NBA_SHEET_ID: ${{ vars.NBA_SHEET_ID }}
       NBA_BACKUP_DIR: nba_backups
       ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}

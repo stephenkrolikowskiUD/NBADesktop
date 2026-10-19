@@ -11,7 +11,7 @@ import runpy
 import sys
 import unittest
 from unittest.mock import patch
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -124,15 +124,16 @@ class GraderTests(unittest.TestCase):
 
 
 class EngineTests(unittest.TestCase):
-    def run_engine(self, *, games=True, current_logs=True, logs_fail=False, ai=False, bad_line=False):
+    def run_engine(self, *, games=True, current_logs=True, logs_fail=False, ai=False, bad_line=False, slate_offset=0, public_source=False):
         today=datetime.now(ZoneInfo('America/New_York')).date().isoformat()
+        target=(datetime.fromisoformat(today)+timedelta(days=slate_offset)).date().isoformat()
         season=season_for_date(today)
         prior=f'{int(season[:4])-1}-12-01'
         seed=pd.DataFrame([log_row(prior, points=99)])
         fresh=pd.DataFrame([log_row(today, points=12)]) if current_logs else seed.iloc[:0].copy()
         book=Workbook(seed)
         roster=pd.DataFrame([{'DISPLAY_FIRST_LAST':'Example Player','TEAM_ABBREVIATION':'LAL'}])
-        event={'id':'today','commence_time':today+'T23:59:59-04:00','home_team':'Los Angeles Lakers','away_team':'New York Knicks'}
+        event={'id':'today','commence_time':target+'T23:59:59-04:00','home_team':'Los Angeles Lakers','away_team':'New York Knicks'}
         def get(url, **kwargs):
             if url.endswith('/events'): return Response([event] if games else [])
             if url.endswith('/odds'):
@@ -141,7 +142,9 @@ class EngineTests(unittest.TestCase):
                     {'description':'Example Player','name':'Under','point':10.5,'price':-110}]}] if ai else []
                 return Response([] if '/events/' not in url else {'bookmakers':[{'key':'draftkings','markets':markets}]})
             raise AssertionError(f'Unexpected request {url}')
+        nba_requests=[]
         def logs(**kwargs):
+            nba_requests.append(kwargs)
             if logs_fail: raise RuntimeError('Simulated NBA timeout')
             return FrameResponse(fresh if kwargs['season_type_all_star']=='Regular Season' else fresh.iloc[:0])
         client=type('Client',(),{'open_by_key':lambda self,key:book})()
@@ -154,9 +157,9 @@ class EngineTests(unittest.TestCase):
             ]: stack.enter_context(patch.object(obj,attr,value))
             stack.enter_context(patch('google.oauth2.service_account.Credentials.from_service_account_info',return_value=object()))
             stack.enter_context(patch('requests.get',side_effect=get))
-            stack.enter_context(patch.object(nba_injuries,'fetch_official_report',return_value={'slate_date':today,'source':'fixture','reported_at':datetime.now(ZoneInfo('UTC')).isoformat(),'official':True,'submitted_teams':['LAL','NYK'],'players':[]}))
-            stack.enter_context(patch.object(nba_sources,'schedule',return_value=[{'homeTeam':{'teamTricode':'LAL'},'awayTeam':{'teamTricode':'NYK'},'gameTimeUTC':today+'T23:59:59-04:00'}] if games else []))
-            stack.enter_context(patch.object(nba_sources,'refresh_seed',side_effect=RuntimeError('Fresh NBA logs unavailable')))
+            stack.enter_context(patch.object(nba_injuries,'fetch_official_report',return_value={'slate_date':target,'source':'fixture','reported_at':datetime.now(ZoneInfo('UTC')).isoformat(),'official':True,'submitted_teams':['LAL','NYK'],'players':[]}))
+            stack.enter_context(patch.object(nba_sources,'schedule',return_value=[{'homeTeam':{'teamTricode':'LAL'},'awayTeam':{'teamTricode':'NYK'},'gameTimeUTC':target+'T23:59:59-04:00'}] if games else []))
+            stack.enter_context(patch.object(nba_sources,'refresh_seed',return_value=pd.concat([seed,fresh],ignore_index=True)) if public_source else patch.object(nba_sources,'refresh_seed',side_effect=RuntimeError('Fresh NBA logs unavailable')))
             if ai:
                 pick={'rank':1,'player':'Example Player','team':'WRONG','game':'LAL @ NYK',
                       'prop_type':'PTS','line':99.5 if bad_line else 10.5,'lean':'OVER',
@@ -166,12 +169,13 @@ class EngineTests(unittest.TestCase):
             stack.enter_context(patch('time.sleep'))
             stack.enter_context(patch('atexit.register'))
             stack.enter_context(patch('sys.excepthook'))
-            stack.enter_context(patch.dict(os.environ,{'GOOGLE_SERVICE_ACCOUNT_JSON':'{}','ODDS_API_KEY':'fixture','GITHUB_ACTIONS':'true','GEMINI_API_KEY':'fixture' if ai else '', 'NBA_BACKUP_DIR':'/tmp/nba-test-backups'}))
+            stack.enter_context(patch.dict(os.environ,{'NBA_PLAYER_LOG_SOURCE':'espn' if public_source else 'nba','NBA_SLATE_DATE':target,'GOOGLE_SERVICE_ACCOUNT_JSON':'{}','ODDS_API_KEY':'fixture','GITHUB_ACTIONS':'true','GEMINI_API_KEY':'fixture' if ai else '', 'NBA_BACKUP_DIR':'/tmp/nba-test-backups'}))
             stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
             try:
                 runpy.run_path(str(ROOT/'NBAEnginev5-4.py'))
             except SystemExit as exc:
                 if exc.code not in (0,None): raise
+        if public_source:self.assertEqual(nba_requests,[])
         return book, today
     def test_scheduled_refresh_trade_and_season_isolation(self):
         book,today=self.run_engine()
@@ -209,6 +213,16 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(picks[0]['team'],'LAL')
         self.assertEqual(picks[0]['opponent'],'NYK')
         self.assertEqual(picks[0]['BOOK'],'draftkings')
+    def test_future_slate_publishes_picks_for_target_date_with_prior_context(self):
+        book,today=self.run_engine(ai=True,current_logs=False,slate_offset=1)
+        target=(datetime.fromisoformat(today)+timedelta(days=1)).date().isoformat()
+        picks=book.tabs['Daily_Picks'].get_all_records()
+        self.assertEqual(len(picks),1);self.assertEqual(picks[0]['DATE'],target)
+        self.assertEqual(picks[0]['BASELINE_TYPE'],'PRIOR_SEASON')
+        self.assertEqual(book.tabs['NBA_Status'].get_all_records()[0]['SLATE_DATE'],target)
+    def test_public_history_refresh_avoids_nba_log_requests(self):
+        book,today=self.run_engine(public_source=True,logs_fail=True,slate_offset=1)
+        self.assertEqual(len(book.tabs['Player_Stats'].get_all_records()),2)
     def test_ai_invented_line_never_published(self):
         book,_=self.run_engine(ai=True,bad_line=True)
         self.assertNotIn('Daily_Picks',book.tabs)

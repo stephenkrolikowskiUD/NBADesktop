@@ -18,7 +18,7 @@ const context=vm.createContext({
   },
   Papa:{parse:(text,options)=>options.complete({data:JSON.parse(text),errors:[],meta:{fields:[]}})},
 });
-vm.runInContext(code+'\nglobalThis.api={evaluateFeed,loadAllData,getState:()=>st,easternTodayISO,seasonForDate,normalizePlayerName,getConvergenceBoard,aiAgreesWithBet,buildCandidatePool,entryFindProp,playerAvailability,getBestBets,scoreCandidate,currentPerformanceRows,performanceTabName};',context);
+vm.runInContext(code+'\nglobalThis.api={evaluateFeed,loadAllData,getState:()=>st,easternTodayISO,seasonForDate,normalizePlayerName,getConvergenceBoard,aiAgreesWithBet,buildCandidatePool,entryFindProp,playerAvailability,getBestBets,scoreCandidate,currentPerformanceRows,performanceTabName,entryLatestPicks};',context);
 const api=context.api;
 const today=api.easternTodayISO();
 const stamp=new Date().toISOString();
@@ -27,7 +27,7 @@ const player={...base,PLAYER_NAME:'Example Player',STATUS:'AVAILABLE',TEAM_ABBRE
 function seed(status='READY'){
   fixtures={
     NBA_Status:[{...base,STATUS:status}],
-    Tonights_Opponent:[player],
+    Tonights_Opponent:[{...player}],
     Dashboard_Player_Stats:[{...player,GAME_DATE:today,PTS:20,MIN:30},{...player,SEASON:'2025-26',GAME_DATE:'2026-04-20',PTS:99}],
     DK_Player_Props:[{...player,METRIC:'PTS',DK_LINE:20.5,OVER_ODDS:-110}],
     Daily_Picks:[{DATE:'2026-04-20',player:player.PLAYER_NAME,prop_type:'PTS',line:20.5,lean:'OVER'}],
@@ -40,6 +40,11 @@ function seed(status='READY'){
     assert.equal(api.getState().tonight.length,1);assert.equal(api.getState().playerStats.length,1);
     fixtures=contract.offDay;await api.loadAllData();assert.equal(api.getState().error,null);assert.equal(api.getState().tonight.length,0);
     assert.match(app.innerHTML,/No NBA games scheduled/);
+    if(contract.future){
+      fixtures=contract.future;await api.loadAllData();assert.equal(api.getState().error,null);
+      assert.equal(api.getState().aiPicks.length,1);assert.equal(api.entryLatestPicks().length,1);
+      assert.equal(api.getState().aiPicks[0].DATE,contract.future.NBA_Status[0].SLATE_DATE);
+    }
   }
   const legacy={SEASON:'2025-26',PERFORMANCE_POLICY:'nba-market-provenance-v1',ROI_METHOD:'EQUAL_UNIT_RECORDED_ODDS'};
   const current={...legacy,SEASON:base.SEASON};
@@ -56,6 +61,16 @@ function seed(status='READY'){
   assert.equal(api.getState().playerStats.length,1);
   assert.equal(api.getState().aiPicks.length,0,'old picks must never masquerade as current');
   assert.match(app.innerHTML,/NBA feed is current/);
+  seed();
+  const tomorrow=new Date(Date.parse(today+'T12:00:00Z')+86400000).toISOString().slice(0,10);
+  for(const name of ['NBA_Status','Tonights_Opponent','Dashboard_Player_Stats','DK_Player_Props'])for(const row of fixtures[name])row.SLATE_DATE=tomorrow;
+  fixtures.Tonights_Opponent[0].COMMENCE_TIME=tomorrow+'T23:59:59-04:00';
+  fixtures.Daily_Picks=[{DATE:tomorrow,player:player.PLAYER_NAME,prop_type:'PTS',line:20.5,lean:'OVER'}];
+  await api.loadAllData();assert.equal(api.getState().error,null);assert.equal(api.getState().tonight.length,1);
+  assert.equal(api.getState().aiPicks.length,1);assert.equal(api.entryLatestPicks().length,1);
+  assert.ok(api.buildCandidatePool('LAL|NYK').candidates.length);assert.match(app.innerHTML,new RegExp(tomorrow));
+  assert.equal(api.getState().pickGuard,null,'future slate picks are not stale merely because they are tomorrow');
+  seed();await api.loadAllData();
   fixtures.Daily_Picks=[{DATE:today,player:player.PLAYER_NAME,prop_type:'PTS',line:20.5,lean:'OVER'},
     {DATE:today,player:player.PLAYER_NAME,prop_type:'REB',line:4.5,lean:'OVER'}];
   await api.loadAllData();assert.equal(api.getState().aiPicks.length,2,'different markets must survive deduplication');

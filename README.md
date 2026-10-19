@@ -97,3 +97,13 @@ NBA_CONTRACT_FIXTURE=/tmp/nba-contract.json node tests/test_nba_dashboard.cjs
 ```
 
 Authenticated staging still requires credentials and a separate workbook: run the engine, load the dashboard with `?sheetId=STAGING_ID`, and run the grader with the same `NBA_SHEET_ID`. Verify fresh and off-day states, eligible performance, exact prices, prior-season context, game locks, and Safari/mobile behavior before production publication. Offline contract checks do not establish live API coverage or deployment readiness.
+
+## Upcoming Slates
+
+The engine defaults to `NBA_SLATE_DATE=next`: it selects the first date with an upcoming regular-season game, looking from today through the next seven days. Use `NBA_SLATE_DATE=today` to force today's slate, or an explicit Eastern date such as `2026-10-20` for opening day. Invalid dates, past dates, and dates beyond seven days are rejected. A failed schedule lookup stops selection rather than silently skipping an unknown date.
+
+GitHub Actions exposes this as the **slate_date** field under **Run workflow**, defaulting to `next`. On Monday October 19, running with `next` or `2026-10-20` selects Tuesday's opening slate. The dashboard uses the published target date consistently for player rows, AI picks, convergence, and Game Entry, and shows the date in the feed status. Publication/quote timestamps remain actual UTC times; future game statistics are never fabricated.
+
+On GitHub runners, seeded player history is refreshed through ESPN final boxes first, avoiding known stats.nba.com timeouts. `NBA_PLAYER_LOG_SOURCE=nba` restores NBA Stats as the first source if needed. The complete historical seed remains available for explicitly labeled prior-season context.
+
+Targeting tomorrow does not bypass availability or market validation. Official reports must cover the target slate and still be fresh at run time. Missing reports, missing quoted lines, or restricted players can therefore leave picks withheld. Rerun when those inputs are available and again before tipoff; the four-hour dashboard freshness limit remains in effect.

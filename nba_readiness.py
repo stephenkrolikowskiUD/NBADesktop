@@ -1,9 +1,37 @@
 """Side-effect-free safety rules for the NBA launch pipeline."""
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import math
 
 EASTERN = ZoneInfo('America/New_York')
+
+
+def resolve_slate(requested, now, fetch_schedule, lookahead=7):
+    today=now.astimezone(EASTERN).date()
+    mode=str(requested or 'next').strip().lower()
+    if mode in {'next','auto'}:
+        days=[today+timedelta(days=offset) for offset in range(lookahead+1)]
+    else:
+        target=today if mode=='today' else datetime.strptime(mode,'%Y-%m-%d').date()
+        if target<today or target>today+timedelta(days=lookahead):
+            raise ValueError('NBA_SLATE_DATE must be today or within the next seven days')
+        days=[target]
+    first=None
+    for day in days:
+        games,source=fetch_schedule(day.isoformat())
+        if source=='unavailable':raise RuntimeError(f'Schedule unavailable for {day}; cannot select a verified slate')
+        first=first or (day.isoformat(),games,source)
+        if mode not in {'next','auto'}:return day.isoformat(),games,source
+        upcoming=[]
+        for game in games:
+            try:
+                start=datetime.fromisoformat(str(game.get('gameTimeUTC','')).replace('Z','+00:00'))
+                eligible=start.tzinfo is not None and start>now
+            except (ValueError,TypeError):
+                eligible=game.get('gameStatus')!=3
+            if eligible:upcoming.append(game)
+        if upcoming:return day.isoformat(),games,source
+    return first
 
 
 def season_for_date(value):

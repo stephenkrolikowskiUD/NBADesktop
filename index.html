@@ -507,7 +507,7 @@ function easternTodayISO(){
 }
 function getPickGuard(latestDate,picksCount){
   if(!st.tonight.length)return null;
-  const today=easternTodayISO();
+  const today=activeSlateDate();
   if(!picksCount){
     return st.props.length
       ?{level:"warn",text:"Engine issue — AI picks are missing or incomplete for tonight's slate."}
@@ -544,22 +544,23 @@ function seasonForDate(date){
   const start=m>=9?y:y-1;
   return `${start}-${String(start+1).slice(-2)}`;
 }
-function rowIsCurrent(row,today=easternTodayISO()){
+function rowIsCurrent(row,today=activeSlateDate()){
   return String(row.SLATE_DATE||"")===today;
 }
+function activeSlateDate(){return st.feedStatus?.slateDate||easternTodayISO()}
 function evaluateFeed(rows,now=Date.now(),today=easternTodayISO()){
-  const status=rows?.[0];
-  if(!status||!rowIsCurrent(status,today))return {usable:false,text:"NBA feed is awaiting today's verified update. Previous slate hidden."};
-  // Engine publishes Eastern timestamps with an explicit zone abbreviation.
+  const status=rows?.[0],slate=String(status?.SLATE_DATE||"");
+  const offset=(Date.parse(slate+"T00:00:00Z")-Date.parse(today+"T00:00:00Z"))/86400000;
+  if(!status||!/^\d{4}-\d{2}-\d{2}$/.test(slate)||!Number.isFinite(offset)||offset<0||offset>7)return {usable:false,text:"NBA feed is awaiting a verified current or upcoming slate. Previous slate hidden."};
+  const context={slateDate:slate};
   const rawStamp=String(status.UPDATED_AT_UTC||"");
   const stamp=/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(rawStamp)?Date.parse(rawStamp):NaN;
-  if(!Number.isFinite(stamp)||now-stamp>4*60*60*1000||stamp>now+5*60*1000)
-    return {usable:false,text:"NBA feed is stale. Refresh after the next engine update."};
-  if(status.STATUS==="NO_GAMES")return {usable:false,text:`No NBA games scheduled for ${today}.`};
-  if(status.STATUS==="WARMUP")return {usable:false,text:"Current-season player history is still building. Picks will appear after verified data is available."};
-  if(!["READY","AWAITING_PROPS","DEGRADED"].includes(status.STATUS))return {usable:false,text:"NBA data is updating. Refresh shortly."};
-  if(status.STATUS==="DEGRADED")return {usable:true,text:"Slate updated with limited data: "+(status.WARNINGS||"a supporting feed is unavailable.")};
-  return {usable:true,text:status.STATUS==="AWAITING_PROPS"?"Today's slate is loaded; waiting for player markets.":"Today's NBA feed is current."};
+  if(!Number.isFinite(stamp)||now-stamp>4*60*60*1000||stamp>now+5*60*1000)return {...context,usable:false,text:"NBA feed is stale. Refresh after the next engine update."};
+  if(status.STATUS==="NO_GAMES")return {...context,usable:false,text:"No NBA games scheduled for "+slate+"."};
+  if(status.STATUS==="WARMUP")return {...context,usable:false,text:"Current-season player history is still building. Picks will appear after verified data is available."};
+  if(!["READY","AWAITING_PROPS","DEGRADED"].includes(status.STATUS))return {...context,usable:false,text:"NBA data is updating. Refresh shortly."};
+  if(status.STATUS==="DEGRADED")return {...context,usable:true,text:"Slate "+slate+" updated with limited data: "+(status.WARNINGS||"a supporting feed is unavailable.")};
+  return {...context,usable:true,text:status.STATUS==="AWAITING_PROPS"?"Slate "+slate+" loaded; waiting for player markets.":"NBA feed is current for "+slate+"."};
 }
 
 function hasLogs(name){ensureDerived();return (derived.logsByName.get(normalizePlayerName(name))||[]).length>0}
@@ -813,7 +814,7 @@ function getConvergenceBoard(){
   return getMemo("convergenceBoard",()=>{
     const board=new Map();
     const latestRun=Math.max(0,...st.aiPicks.map(p=>toNum(p.RUN_NUMBER)));
-    const latestPicks=st.aiPicks.filter(p=>normalizeDate(p.DATE)===easternTodayISO()&&(!latestRun||toNum(p.RUN_NUMBER)===latestRun));
+    const latestPicks=st.aiPicks.filter(p=>normalizeDate(p.DATE)===activeSlateDate()&&(!latestRun||toNum(p.RUN_NUMBER)===latestRun));
     const allowed=new Set(latestPicks.map(p=>normalizePlayerName(p.player)).filter(Boolean));
     const tonight=new Map(st.tonight.map(p=>[normalizePlayerName(p.PLAYER_NAME),p]));
     const add=(name,source,boost=0,meta={})=>{
@@ -957,7 +958,7 @@ function entryOpp(row){return String(entryField(row,['opp_abbr_tonight','TONIGHT
 function entryPlayer(row){return cleanName(entryField(row,['player_name','PLAYER_NAME','PLAYER','player','Player']))}
 function entryPairId(a,b){a=String(a||'').trim().toUpperCase();b=String(b||'').trim().toUpperCase();if(!a||!b)return '';return [a,b].sort().join('|')}
 function entryGameFromText(game){const s=String(game||'').trim();const m=s.match(/\b([A-Z]{2,4})\s*(?:@|vs\.?|VS)\s*([A-Z]{2,4})\b/);if(!m)return null;return {id:entryPairId(m[1],m[2]),label:s,teams:[m[1],m[2]]}}
-function entryTodayISO(){const parts=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date()).reduce((a,p)=>(a[p.type]=p.value,a),{});return `${parts.year}-${parts.month}-${parts.day}`}
+function entryTodayISO(){return activeSlateDate()}
 function entryDateISO(v){if(v===undefined||v===null||String(v).trim()==='')return '';const raw=String(v).trim();if(/^\d{4}-\d{2}-\d{2}$/.test(raw))return raw;const md=raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);if(md)return `${md[3]}-${md[1].padStart(2,"0")}-${md[2].padStart(2,"0")}`;const n=Number(raw);if(Number.isFinite(n)&&n>20000&&n<90000){const d=new Date(Math.round((n-25569)*86400*1000));return d.toISOString().slice(0,10)}const d=new Date(raw);if(Number.isNaN(d.getTime()))return typeof normalizeDate==='function'?normalizeDate(raw):'';const parts=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(d).reduce((a,p)=>(a[p.type]=p.value,a),{});return `${parts.year}-${parts.month}-${parts.day}`}
 function entryRowDate(row){return entryField(row,['DATE','date','GAME_DATE','game_date','Date','GAME_DAY','game_day','start_date','START_DATE','commence_time','COMMENCE_TIME','game_time','GAME_TIME','start_time','START_TIME'])}
 function entryRowIsToday(row){const raw=entryRowDate(row);const iso=entryDateISO(raw);return !iso||iso===entryTodayISO()}
@@ -1337,7 +1338,7 @@ function loadAllData(){
     if(st.feedStatus.usable&&run&&[tonight,stats,props,splits,correlations].some(rows=>(rows||[]).some(r=>r.RUN_ID!==run)))throw new Error("Mixed engine snapshots");
     if(st.feedStatus.usable&&(!tonight||!stats))throw new Error("Required slate feed unavailable. Run the updated engine to publish Tonights_Opponent and Dashboard_Player_Stats.");
     // Apply data cleaning (ported from MLB)
-    const today=easternTodayISO();
+    const today=activeSlateDate();
     const season=seasonForDate(today);
     st.feedStatus=evaluateFeed(normalizeKeys(cleanRows(status)));
     st.tonight=st.feedStatus.usable?normalizeKeys(cleanRows(tonight)).filter(r=>rowIsCurrent(r)):[];
