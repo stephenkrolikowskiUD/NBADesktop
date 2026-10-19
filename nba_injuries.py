@@ -20,7 +20,7 @@ class ReportHTTP:
     def get(self,url):
         try:
             response=requests.get(url,timeout=10)
-            if response.status_code!=200:raise FeedError('Official report unavailable')
+            if response.status_code!=200:raise FeedError(f'Official report unavailable (HTTP {response.status_code})')
             if not response.content.startswith(b'%PDF'):raise FeedError('Official report was not a PDF')
             return response.content
         except requests.RequestException as exc:raise FeedError('Official report unavailable') from exc
@@ -63,17 +63,34 @@ def report_from_csv(text):
             'status':r['STATUS'],'detail':r.get('DETAIL',''),'minutes_restricted':str(r.get('MINUTES_RESTRICTED','')).upper()=='TRUE'} for r in rows]}
 
 
+def page_rows(page):
+    words=[]
+    def collect(text,current,text_matrix,font,size):
+        if not text.strip():return
+        horizontal=text_matrix[4]*current[0]+text_matrix[5]*current[2]+current[4]
+        vertical=text_matrix[4]*current[1]+text_matrix[5]*current[3]+current[5]
+        words.append((vertical,horizontal,text.strip()))
+    page.extract_text(visitor_text=collect)
+    rows=[]
+    for vertical,horizontal,text in sorted(words,key=lambda word:(-word[0],word[1])):
+        if not rows or abs(rows[-1][0]-vertical)>2:
+            rows.append((vertical,[]))
+        rows[-1][1].append((horizontal,text))
+    return [' '.join(text for horizontal,text in sorted(parts)) for vertical,parts in rows]
+
+
 def report_from_pdf(data,date,team_names,url):
     """Parse aligned NBA report text conservatively; unsupported layouts fail closed."""
     from pypdf import PdfReader
     reader=PdfReader(io.BytesIO(data))
-    text='\n'.join(page.extract_text(extraction_mode='layout') or '' for page in reader.pages)
-    stamp=re.search(r'Injury Report:\s*(\d\d/\d\d/\d\d)\s+(\d\d:\d\d\s*[AP]M)',text)
+    text='\n'.join(line for page in reader.pages for line in page_rows(page))
+    stamp=re.search(r'Injury\s+Report:\s*(\d\d/\d\d/\d\d)\s+(\d\d:\d\d\s*[AP]M)',text)
     if not stamp:raise ValueError('NBA injury report timestamp not found')
     reported=datetime.strptime(stamp[1]+' '+stamp[2].replace(' ',''),'%m/%d/%y %I:%M%p').replace(tzinfo=EASTERN)
     report={'source':url,'reported_at':reported.isoformat(),'slate_date':date,'official':True,'submitted_teams':[],'players':[]}
     active_date='';team='';seen=set();unsubmitted=set();verified=set();last_player=None
     for line in text.splitlines():
+        if re.match(r'^(?:Page\s+\d+\s+of\s+\d+|Injury\s+Report:|Game\s+Date\s+Game\s+Time)',line.strip()):continue
         date_match=re.search(r'\b(\d\d/\d\d/\d{4})\b',line)
         if date_match:active_date=datetime.strptime(date_match[1],'%m/%d/%Y').date().isoformat();team=''
         if active_date!=date:continue
@@ -98,6 +115,7 @@ def report_from_pdf(data,date,team_names,url):
         last_player={'player':first+' '+last,'team':team,'status':status[1].upper(),'detail':line[status.end():].strip()}
         report['players'].append(last_player);verified.add(team)
     report['submitted_teams']=sorted(verified-unsubmitted)
+    report['unsubmitted_teams']=sorted(unsubmitted)
     if not seen:raise ValueError('No teams matched requested slate date in NBA report')
     return report
 
@@ -111,6 +129,6 @@ def fetch_official_report(http,date,teams,now):
         stamp=rounded-timedelta(minutes=minutes)
         url='https://ak-static.cms.nba.com/referee/injury/Injury-Report_'+stamp.strftime('%Y-%m-%d_%I_%M%p')+'.pdf'
         try:return report_from_pdf(http.get(url),date,teams,url)
-        except (FeedError,ValueError) as exc:errors.append(type(exc).__name__)
+        except (FeedError,ValueError) as exc:errors.append({'url':url,'error':type(exc).__name__,'detail':str(exc)})
     return {'source':'NBA official report unavailable','slate_date':date,'reported_at':'',
             'official':False,'players':[],'submitted_teams':[],'errors':errors}

@@ -50,6 +50,16 @@ def event_is_on_date(event, target_date):
         return False
 
 
+def slate_market_events(events, target_date, opponents, team_names):
+    selected=[]
+    for event in events:
+        home=team_names.get(event.get('home_team'))
+        away=team_names.get(event.get('away_team'))
+        if event_is_on_date(event,target_date) and home and away and opponents.get(home)==away and opponents.get(away)==home:
+            selected.append(event)
+    return selected
+
+
 def is_actionable_player(row, now):
     status=str(row.get('STATUS') or row.get('AVAILABILITY') or 'UNKNOWN').strip().upper()
     restricted=str(row.get('MINUTES_RESTRICTED', '')).strip().lower() in {'true','1'}

@@ -20,7 +20,7 @@ from nba_api.stats.static import teams
 from run_logger import RunLogger
 import nba_sources
 import nba_injuries
-from nba_readiness import season_for_date, event_is_on_date, validate_market_picks, replace_sheet_values, select_analysis_history, finite_odds_probability, non_push_rate, selection_key, is_actionable_player, dashboard_stats, PERFORMANCE_POLICY, resolve_slate
+from nba_readiness import season_for_date, event_is_on_date, validate_market_picks, replace_sheet_values, select_analysis_history, finite_odds_probability, non_push_rate, selection_key, is_actionable_player, dashboard_stats, PERFORMANCE_POLICY, resolve_slate, slate_market_events
 
 # --- 1. AUTHENTICATION & SETUP ---
 print("Authenticating with Google...")
@@ -1007,6 +1007,10 @@ try:
 
     odds_games = cached_odds_fetch("game_odds", _fetch_game_odds)
     if odds_games:
+        before_events = len(odds_games)
+        odds_games = slate_market_events(odds_games, today_str, opp_map, full_to_abbr)
+        print(f"🎯 Vegas events matched to {today_str}: {before_events} -> {len(odds_games)} games")
+    if odds_games:
         odds_list = []
         for game in odds_games:
             if not game.get('bookmakers'):
@@ -1109,7 +1113,14 @@ else:
         datetime.now(pytz.UTC))
 injury_people=nba_injuries.apply_availability(
     df_tonight_sheet.to_dict('records'), injury_report, today_str, datetime.now(pytz.UTC))
+print(f"🏥 Injury report: {injury_report.get('source', 'unavailable')} | {injury_report.get('reported_at') or 'no verified timestamp'}")
+if injury_report.get('unsubmitted_teams'):
+    print('   ⏳ Team reports not yet submitted: ' + ', '.join(injury_report['unsubmitted_teams']))
+if injury_report.get('errors'):
+    print('   ⚠️ Injury report attempts: ' + json.dumps(injury_report['errors'], default=str))
 if injury_people:
+    availability_counts=pd.Series([person['AVAILABILITY'] for person in injury_people]).value_counts().to_dict()
+    print(f'   Player availability: {availability_counts}')
     df_injuries=pd.DataFrame(injury_people)[['PLAYER_NAME','AVAILABILITY','INJURY_SOURCE','INJURY_REPORT_TIME','INJURY_DETAIL','MINUTES_RESTRICTED']]
     df_tonight_sheet=df_tonight_sheet.merge(df_injuries,on='PLAYER_NAME',how='left')
     df_tonight_sheet['STATUS']=df_tonight_sheet['AVAILABILITY']
@@ -1646,7 +1657,8 @@ if not df_props.empty and len(df_logs) > 0:
         plus_ev_over = len(df_ev[df_ev['EDGE_OVER'] > 0])
         smash_plays = len(df_ev[df_ev['EDGE_OVER'] > 10])
         print(f"✅ EV calculated for {len(df_ev)} props")
-        print(f"   📈 {plus_ev_over} +EV overs | {smash_plays} SMASH plays (10%+ edge)")
+        print(f"   📈 {plus_ev_over} positive historical-gap overs | {smash_plays} large historical gaps (10pp+)")
+        print('   Research estimates only; player availability is checked before AI picks are published.')
         for _, r in df_ev.head(5).iterrows():
             print(f"   🔥 {r['PLAYER_NAME']} {r['METRIC']} > {r['DK_LINE']}: {r['HIT_RATE_SEASON']*100:.0f}% hit, {r['EDGE_OVER']}% edge, ${r['EV_OVER_$100']}/100")
     else:
