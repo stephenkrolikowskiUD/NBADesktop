@@ -58,7 +58,7 @@ NBA currently runs manually in Colab. GitHub Actions workflow files exist, but `
 
 The launch fixes retain Stats, Game Entry, multi-book pricing, and the existing Odds API cost controls. `nba_readiness.py`, `nba_sources.py`, and `nba_injuries.py` must be alongside the engine and grader, including when running in Colab. Install `requirements-nba.txt` before running.
 
-The dashboard requires a fresh `NBA_Status` sheet from the updated engine. Deploy the engine and dashboard together; until the engine publishes that status, the dashboard deliberately hides stale actionable data. Availability that cannot be verified also withholds affected picks.
+The dashboard requires a dated, completed `NBA_Status` sheet from the updated engine. Deploy the engine and dashboard together; until the engine publishes that status, the dashboard withholds unverified or mixed snapshots. Availability that cannot be verified also withholds affected picks.
 
 Workflows remain manual. Engine and grader share a concurrency group to avoid overlapping sheet writes. Live authenticated execution and injury coverage still need launch QA.
 
@@ -75,7 +75,7 @@ The review fixes allow off-day status pages to load alongside older historical t
 
 For staging, set `NBA_SHEET_ID` for both Python scripts (or the GitHub Actions repository variable). Open the dashboard with `?sheetId=STAGING_SHEET_ID`. With no override, all components use the existing production workbook. Stage the engine and frontend together: the frontend now requires `NBA_Status.UPDATED_AT_UTC` for freshness.
 
-The four-hour freshness limit still applies to manual operation: rerun before it expires, including before the evening slate. Do not overlap Colab writers with the engine or grader; Actions concurrency cannot coordinate a separate Colab session. An authenticated Python 3.12 staging run, current official injury PDF access/layout, postponed/suspended ESPN coverage, real API quota consumption, and actual iPhone QA remain release requirements. Direct dependency pins are not a complete transitive lockfile.
+Published slate data stays visible as it ages. The header shows the engine update time and warns after four hours; age alone never clears picks, props, or history. Published picks remain visible after tipoff with lock badges, while started, unavailable, or minutes-restricted players are excluded from new entries. Rerun the engine when updated prices and injury reports are needed. Do not overlap Colab writers with the engine or grader; Actions concurrency cannot coordinate a separate Colab session. An authenticated Python 3.12 staging run, current official injury PDF access/layout, postponed/suspended ESPN coverage, real API quota consumption, and actual iPhone QA remain release requirements. Direct dependency pins are not a complete transitive lockfile.
 
 Selection identity intentionally includes line, book, and event. A changed market can be a distinct selection, while an identical market is not appended again. Latest-run convergence does not currently record a separate observation when Gemini repeats an existing selection; that behavior needs a separate observation log rather than duplicate graded picks.
 
@@ -106,6 +106,8 @@ GitHub Actions exposes this as the **slate_date** field under **Run workflow**, 
 
 On GitHub runners, seeded player history is refreshed through ESPN final boxes first, avoiding known stats.nba.com timeouts. `NBA_PLAYER_LOG_SOURCE=nba` restores NBA Stats as the first source if needed. The complete historical seed remains available for explicitly labeled prior-season context.
 
-Targeting tomorrow does not bypass availability or market validation. Official reports must cover the target slate and still be fresh at run time. Missing reports, missing quoted lines, or restricted players can therefore leave picks withheld. Rerun when those inputs are available and again before tipoff; the four-hour dashboard freshness limit remains in effect.
+Targeting tomorrow does not bypass availability or market validation. Official reports must cover the target slate and still be fresh at run time. Missing reports, missing quoted lines, or restricted players can therefore leave picks withheld. Rerun when those inputs are available and again before tipoff; the dashboard keeps the saved snapshot visible with its age and an aging-data warning. Engine quote and injury freshness checks still apply when generating new picks.
 
 The injury reader reconstructs PDF rows from their displayed coordinates, including reports whose extraction order is reversed. Regression tests include the public October 19, 2026 4:30 p.m. report. Teams marked `NOT YET SUBMITTED` remain unknown; a submitted team's unlisted players can pass the existing availability checks. Engine logs show report time, pending teams, availability counts, and report-fetch/parser failures. Game-level Vegas context is restricted to the target Eastern date and exact scheduled matchup before team rows are merged.
+
+Team logos are served locally from `assets/team-logos/`, sourced from the official NBA logo CDN. Abbreviations remain visible when an image is unavailable.
