@@ -18,7 +18,7 @@ const context=vm.createContext({
   },
   Papa:{parse:(text,options)=>options.complete({data:JSON.parse(text),errors:[],meta:{fields:[]}})},
 });
-vm.runInContext(code+'\nglobalThis.api={evaluateFeed,loadAllData,getState:()=>st,easternTodayISO,seasonForDate,normalizePlayerName,getConvergenceBoard,aiAgreesWithBet,buildCandidatePool,entryFindProp,playerAvailability,getBestBets,scoreCandidate,currentPerformanceRows,performanceTabName,entryLatestPicks};',context);
+vm.runInContext(code+'\nglobalThis.api={evaluateFeed,loadAllData,searchDashPlayer,getPlayerLogs,getState:()=>st,easternTodayISO,seasonForDate,normalizePlayerName,getConvergenceBoard,aiAgreesWithBet,buildCandidatePool,entryFindProp,playerAvailability,getBestBets,scoreCandidate,currentPerformanceRows,performanceTabName,entryLatestPicks};',context);
 const api=context.api;
 const today=api.easternTodayISO();
 const stamp=new Date().toISOString();
@@ -62,6 +62,21 @@ function seed(status='READY'){
   assert.equal(api.getState().aiPicks.length,0,'old picks must never masquerade as current');
   assert.match(app.innerHTML,/NBA feed is current/);
   seed();
+  fixtures.NBA_Status[0].RUN_ID='research-run';
+  fixtures.NBA_Status[0].UPDATED_AT_UTC=new Date(Date.now()-5*3600000).toISOString();
+  fixtures.Tonights_Opponent[0].ANALYSIS_SEASON='2025-26';
+  for(const rows of [fixtures.Tonights_Opponent,fixtures.Dashboard_Player_Stats])for(const row of rows)row.RUN_ID='research-run';
+  await api.loadAllData();
+  assert.equal(api.getState().tonight.length,0);assert.equal(api.getState().props.length,0);
+  assert.equal(api.getState().aiPicks.length,0);assert.equal(api.buildCandidatePool('LAL|NYK').candidates.length,0);
+  assert.match(app.innerHTML,/Player history is available/);assert.match(app.innerHTML,/<option value="Example Player">/);
+  assert.equal(api.searchDashPlayer('example',true),true);assert.equal(api.getState().player,'Example Player');
+  assert.equal(api.getPlayerLogs('Example Player')[0].PTS,99,'prior-season history survives stale feed gating');
+  assert.equal(api.searchDashPlayer('no such player',true),false);assert.equal(api.getState().player,'Example Player');
+  api.getState().researchPlayers.push({PLAYER_NAME:'Example Other'});
+  assert.equal(api.searchDashPlayer('example',true),false,'ambiguous searches must not select arbitrary players');
+  assert.equal(api.searchDashPlayer('example player'),true);
+  seed();
   const tomorrow=new Date(Date.parse(today+'T12:00:00Z')+86400000).toISOString().slice(0,10);
   for(const name of ['NBA_Status','Tonights_Opponent','Dashboard_Player_Stats','DK_Player_Props'])for(const row of fixtures[name])row.SLATE_DATE=tomorrow;
   fixtures.Tonights_Opponent[0].COMMENCE_TIME=tomorrow+'T23:59:59-04:00';
@@ -76,7 +91,7 @@ function seed(status='READY'){
   await api.loadAllData();assert.equal(api.getState().aiPicks.length,2,'different markets must survive deduplication');
   fixtures.NBA_Status=[];await api.loadAllData();
   assert.equal(api.getState().tonight.length,0);assert.equal(api.getState().props.length,0);
-  assert.equal(api.getState().player,'');assert.equal(api.getState().error,null);
+  assert.ok(api.getState().researchPlayers.length,'historical players remain searchable without a live slate');assert.equal(api.getState().error,null);
   seed('NO_GAMES');await api.loadAllData();assert.match(app.innerHTML,/No NBA games scheduled/);
   assert.equal(api.getState().tonight.length,0);
   seed('NO_GAMES');fixtures.NBA_Status[0].RUN_ID='off-day-run';fixtures.Dashboard_Player_Stats[0].RUN_ID='old-run';

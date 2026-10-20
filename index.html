@@ -293,7 +293,7 @@ function getRollingVal(row,prefix,m){
   return toNum(row[`${prefix}${m}`]);
 }
 
-let st={tonight:[],playerStats:[],props:[],splits:[],aiPicks:[],correlations:[],player:"",metric:"PTS",line:"",activeTab:"dashboard",oppFilter:"",pickPerformance:[],pickPerformanceSnaps:[],statsTimeWindow:"last_30d",gameEntry:{selectedGame:null,legCount:GAME_ENTRY_DEFAULT_LEGS,entry:null},picksView:"bets",propsMetric:"ALL",propsSearch:"",streakFilter:"all",dueFilter:"all",streaks:[],drafted:new Set(),slipLegs:"3",parlayStat:"PTS",loading:true,error:null,loadedAt:null,latestPickDate:"",pickGuard:null,dataVersion:0,theme:(localStorage.getItem("nba-dashboard-theme")||"dark")};
+let st={tonight:[],researchPlayers:[],playerStats:[],props:[],splits:[],aiPicks:[],correlations:[],player:"",metric:"PTS",line:"",activeTab:"dashboard",oppFilter:"",pickPerformance:[],pickPerformanceSnaps:[],statsTimeWindow:"last_30d",gameEntry:{selectedGame:null,legCount:GAME_ENTRY_DEFAULT_LEGS,entry:null},picksView:"bets",propsMetric:"ALL",propsSearch:"",streakFilter:"all",dueFilter:"all",streaks:[],drafted:new Set(),slipLegs:"3",parlayStat:"PTS",loading:true,error:null,loadedAt:null,latestPickDate:"",pickGuard:null,dataVersion:0,theme:(localStorage.getItem("nba-dashboard-theme")||"dark")};
 function applyTheme(){document.body.classList.toggle("light-theme",st.theme==="light")}
 function toggleTheme(){st.theme=st.theme==="light"?"dark":"light";localStorage.setItem("nba-dashboard-theme",st.theme);applyTheme();render()}
 let cache={player:null,sortedLogs:null};
@@ -744,6 +744,16 @@ function setSlipLegs(n){st.slipLegs=n;render()}
 function setParlayStat(s){st.parlayStat=s;render()}
 function toggleDrafted(name){if(st.drafted.has(name))st.drafted.delete(name);else st.drafted.add(name);render()}
 function resetDrafted(){st.drafted.clear();render()}
+function searchablePlayers(){return st.researchPlayers||[]}
+function searchDashPlayer(query,partial=false){
+  const key=normalizePlayerName(query);if(!key)return false;
+  const players=searchablePlayers();
+  const exact=players.find(p=>normalizePlayerName(p.PLAYER_NAME)===key);
+  const matches=exact?[exact]:partial?players.filter(p=>normalizePlayerName(p.PLAYER_NAME).includes(key)):[];
+  if(matches.length!==1)return false;
+  const input=document.getElementById("dashPlayerSearch");if(input)input.value=matches[0].PLAYER_NAME;
+  pickDashPlayer(matches[0].PLAYER_NAME);return true;
+}
 function pickDashPlayer(name){st.player=name;st.oppFilter="";const p=st.props.find(pr=>normalizePlayerName(pr.PLAYER_NAME)===normalizePlayerName(st.player)&&normalizePropName(pr.METRIC)===normalizePropName(st.metric));st.line=p?.DK_LINE||"";cache.player=null;render()}
 function streakToDash(name,metric="",line=""){window.scrollTo(0,0);st.player=name;st.activeTab="dashboard";st.oppFilter="";if(metric)st.metric=metric;const p=st.props.find(pr=>normalizePlayerName(pr.PLAYER_NAME)===normalizePlayerName(name)&&normalizePropName(pr.METRIC)===normalizePropName(st.metric));st.line=line||p?.DK_LINE||"";cache.player=null;render()}
 function playerLink(name,metric="",line="",label=""){const n=cleanName(label||name);return `<span class="player-link" onclick="event.stopPropagation();streakToDash('${esc(name)}','${esc(metric)}','${esc(line)}')">${esc(n)}</span>`}
@@ -1114,7 +1124,8 @@ function render(){
   const lastUp=most.LAST_UPDATED||pT.LAST_UPDATED||"—";
 
   // Early season banner (ported from MLB)
-  const priorBanner=pT.BASELINE_TYPE==="PRIOR_SEASON"?`<div class="early-banner"><div class="icon">🌱</div><div class="msg">Prior-season baseline · ${esc(pT.ANALYSIS_SEASON)}</div><div class="sub">${esc(player)} has no current-season game logs yet. Charts and averages below are from last season; current team and matchup are updated.</div></div>`:"";
+  const researchContext=searchablePlayers().find(p=>normalizePlayerName(p.PLAYER_NAME)===playerKey)||{};
+  const priorBanner=researchContext.BASELINE_TYPE==="PRIOR_SEASON"?`<div class="early-banner"><div class="icon">🌱</div><div class="msg">Prior-season baseline · ${esc(researchContext.ANALYSIS_SEASON)}</div><div class="sub">${esc(player)} has no current-season game logs yet. Charts and averages below are from last season.${st.feedStatus?.usable?" Current team and matchup are updated.":" Live matchup and market context is withheld."}</div></div>`:"";
   const earlyBanner=priorBanner||(!pHasLogs&&player?`<div class="early-banner"><div class="icon">🌱</div><div class="msg">Early Season — No Game Logs Yet</div><div class="sub">${esc(player)} is on the active roster. Matchup info and available props are shown; no game averages are invented.</div></div>`:"");
 
   // Pick banner for dash
@@ -1271,7 +1282,7 @@ function render(){
         <input type="text" id="dashPlayerSearch" list="playerList" placeholder="Search player..." value="${esc(player)}" autocomplete="off"
           onfocus="this.select()"
         />
-        <datalist id="playerList">${[...tonight].sort((a,b)=>(a.PLAYER_NAME||"").localeCompare(b.PLAYER_NAME||"")).filter(p=>p.PLAYER_NAME).map(t=>`<option value="${esc(t.PLAYER_NAME)}">${esc(t.TEAM_ABBREVIATION||"")} vs ${esc(t.TONIGHT_OPP||"")}</option>`).join("")}</datalist>
+        <datalist id="playerList">${[...searchablePlayers()].sort((a,b)=>(a.PLAYER_NAME||"").localeCompare(b.PLAYER_NAME||"")).filter(p=>p.PLAYER_NAME).map(t=>`<option value="${esc(t.PLAYER_NAME)}">${esc(t.TEAM_ABBREVIATION||"")} vs ${esc(t.TONIGHT_OPP||"")}</option>`).join("")}</datalist>
       </div>
       <select id="metricSelect">${metricOpts}</select>
       <input type="number" id="lineInput" value="${line}" placeholder="Line" step="0.5" inputmode="decimal" style="max-width:80px"/>
@@ -1315,7 +1326,11 @@ function render(){
 
   // ═══ EVENT LISTENERS ═══
   const dps=document.getElementById("dashPlayerSearch");
-  if(dps)dps.addEventListener("change",e=>{if(e.target.value&&!_restoring)pickDashPlayer(e.target.value)});
+  if(dps){
+    dps.addEventListener("input",e=>{if(!_restoring)searchDashPlayer(e.target.value)});
+    dps.addEventListener("change",e=>{if(!_restoring)searchDashPlayer(e.target.value,true)});
+    dps.addEventListener("keydown",e=>{if(e.key==="Enter"&&!_restoring){e.preventDefault();searchDashPlayer(e.target.value,true)}});
+  }
   document.getElementById("metricSelect")?.addEventListener("change",e=>{st.metric=e.target.value;const p=st.props.find(pr=>normalizePlayerName(pr.PLAYER_NAME)===normalizePlayerName(st.player)&&normalizePropName(pr.METRIC)===normalizePropName(st.metric));st.line=p?.DK_LINE||"";render()});
   document.getElementById("lineInput")?.addEventListener("change",e=>{st.line=e.target.value;render()});
   document.getElementById("themeBtn")?.addEventListener("click",toggleTheme);
@@ -1342,8 +1357,16 @@ function loadAllData(){
     const season=seasonForDate(today);
     st.feedStatus=evaluateFeed(normalizeKeys(cleanRows(status)));
     st.tonight=st.feedStatus.usable?normalizeKeys(cleanRows(tonight)).filter(r=>rowIsCurrent(r)):[];
-    const analysisSeasons=new Map(st.tonight.map(r=>[normalizePlayerName(r.PLAYER_NAME),r.ANALYSIS_SEASON||season]));
+    // History browsing remains available when live selection feeds are withheld.
+    // Only use a completed, consistent snapshot for roster/baseline context.
+    const researchSnapshot=run&&after?.[0]?.RUN_ID===run&&["READY","AWAITING_PROPS","DEGRADED","WARMUP","NO_GAMES"].includes(status?.[0]?.STATUS)&&[tonight,stats].every(rows=>Array.isArray(rows)&&rows.every(r=>r.RUN_ID===run));
+    const researchRoster=st.feedStatus.usable?st.tonight:researchSnapshot?normalizeKeys(cleanRows(tonight)):[];
+    const analysisSeasons=new Map(researchRoster.map(r=>[normalizePlayerName(r.PLAYER_NAME),r.ANALYSIS_SEASON||season]));
     st.playerStats=normalizeKeys(cleanRows(stats)).filter(r=>(r.SEASON||seasonForDate(normalizeDate(r.GAME_DATE)))===(analysisSeasons.get(normalizePlayerName(r.PLAYER_NAME))||season));
+    const researchByName=new Map(researchRoster.filter(r=>r.PLAYER_NAME).map(r=>[normalizePlayerName(r.PLAYER_NAME),r]));
+    for(const row of st.playerStats){const key=normalizePlayerName(row.PLAYER_NAME);if(key&&!researchByName.has(key))researchByName.set(key,{PLAYER_NAME:row.PLAYER_NAME,ANALYSIS_SEASON:row.SEASON})}
+    st.researchPlayers=[...researchByName.values()];
+    if(!st.feedStatus.usable&&st.researchPlayers.length)st.feedStatus.text+=" Player history is available; live picks and markets are withheld.";
     st.props=st.feedStatus.usable?normalizeKeys(cleanRows(props||[])).filter(r=>rowIsCurrent(r)):[];
     st.splits=st.feedStatus.usable?normalizeKeys(cleanRows(splits||[])).filter(r=>rowIsCurrent(r)):[];
     st.correlations=st.feedStatus.usable?normalizeKeys(cleanRows(correlations||[])).filter(r=>rowIsCurrent(r)):[];
@@ -1400,9 +1423,9 @@ function loadAllData(){
     st.pickGuard=getPickGuard(latestDate,st.aiPicks.length);
     st.loading=false;st.loadedAt=new Date().toLocaleTimeString();
     // Use robust player finder (ported from MLB)
-    if(!st.tonight.length)st.player="";
-    if(st.tonight.length>0&&!st.player){
-      st.player=firstValidPlayer(st.tonight);
+    if(!searchablePlayers().some(p=>normalizePlayerName(p.PLAYER_NAME)===normalizePlayerName(st.player)))st.player="";
+    if(searchablePlayers().length>0&&!st.player){
+      st.player=firstValidPlayer(searchablePlayers());
       const p=st.props.find(pr=>normalizePlayerName(pr.PLAYER_NAME)===normalizePlayerName(st.player)&&normalizePropName(pr.METRIC)===normalizePropName(st.metric));
       st.line=p?.DK_LINE||"";
     }
@@ -1415,7 +1438,7 @@ function loadAllData(){
     st.streaks=getStreaks();render();
   }).catch(err=>{
     console.error("❌ Load failed:",err);
-    st.tonight=[];st.playerStats=[];st.props=[];st.splits=[];st.correlations=[];st.aiPicks=[];st.player="";st.dataVersion++;resetDerived();
+    st.tonight=[];st.researchPlayers=[];st.playerStats=[];st.props=[];st.splits=[];st.correlations=[];st.aiPicks=[];st.player="";st.dataVersion++;resetDerived();
     const message=String(err?.message||"");
     st.loading=false;st.error=/snapshots|changed during load/.test(message)?"The engine is publishing a new slate. Refresh after it finishes.":message.startsWith("Required slate feed")?message:"Could not load the NBA feeds. Check the engine run and published feed tabs, then retry.";render();
   });
