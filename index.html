@@ -524,20 +524,36 @@ function renderPickGuard(guard){
   return `<div class="card" style="margin:0 16px 12px;border-left:3px solid ${border}"><div style="font-size:11px;color:${text};font-weight:600">${esc(guard.text)}</div></div>`;
 }
 
-const fetchSheet=n=>new Promise((res,rej)=>{
-  const url=`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&headers=1&sheet=${encodeURIComponent(n)}&cacheBust=${Date.now()}`;
-  fetch(url,{cache:"no-store",signal:AbortSignal.timeout(20000)}).then(r=>{
-    if(!r.ok){console.error(`❌ Sheet fetch failed: ${n} (${r.status})`);throw new Error(`Failed: ${n}`)}
-    return r.text()
-  }).then(t=>{
-    if(/^\s*</.test(t))throw new Error(`Invalid CSV response: ${n}`);
-    Papa.parse(t,{header:true,skipEmptyLines:true,dynamicTyping:true,complete:r=>{
-      console.log(`✅ ${n}: ${r.data.length} rows, cols: ${r.meta.fields?.slice(0,5).join(', ')}...`);
-      if(r.errors?.length){rej(new Error(`Invalid CSV: ${n}`));return}
-      res(r.data);
-    },error:rej});
-  }).catch(rej)
-});
+async function readSheet(n,probe=false,attempt=0){
+  const url=new URL(`https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq`);
+  url.searchParams.set("tqx","out:csv");url.searchParams.set("headers","1");url.searchParams.set("sheet",n);
+  url.searchParams.set("cacheBust",String(Date.now()));
+  if(probe)url.searchParams.set("tq","select * limit 0");
+  try{
+    const response=await fetch(url.href,{cache:"no-store",signal:AbortSignal.timeout(30000)});
+    if(!response.ok)throw new Error(`Failed: ${n} (${response.status})`);
+    const text=await response.text();if(/^\s*</.test(text))throw new Error(`Invalid CSV response: ${n}`);
+    return await new Promise((resolve,reject)=>Papa.parse(text,{header:true,skipEmptyLines:true,dynamicTyping:field=>!/(?:DATE|TIME|_AT(?:_|$)|UTC)/i.test(field),
+      complete:result=>{
+        if(result.errors?.length){reject(new Error(`Invalid CSV: ${n}`));return}
+        resolve({rows:result.data,fields:result.meta.fields?.length?result.meta.fields:Object.keys(result.data[0]||{})});
+      },error:reject}));
+  }catch(error){
+    if(attempt===0&&!probe&&!/Invalid CSV|Failed:/.test(String(error?.message)))return readSheet(n,probe,1);
+    throw error;
+  }
+}
+async function fetchSheet(n){
+  // Google returns the first worksheet for unknown tab names. Probe optional
+  // performance schemas without downloading the full fallback history sheet.
+  if(n.startsWith("Pick_Performance_")){
+    const header=await readSheet(n,true);
+    if(!header.fields.includes("PERFORMANCE_POLICY"))return [];
+  }
+  const result=await readSheet(n);
+  console.log(`✅ ${n}: ${result.rows.length} rows`);
+  return result.rows;
+}
 
 function seasonForDate(date){
   const y=Number(date.slice(0,4)),m=Number(date.slice(5,7));
@@ -1344,9 +1360,9 @@ function render(){
 
 function loadAllData(){
   st.loading=true;st.error=null;cache.player=null;cache.sortedLogs=null;resetDerived();render();
-  return Promise.all([fetchSheet("Tonights_Opponent").catch(()=>null),fetchSheet("Dashboard_Player_Stats").catch(()=>null),fetchSheet("DK_Player_Props").catch(()=>[]),fetchSheet("Home_Away_Splits").catch(()=>[]),fetchSheet("Daily_Picks").catch(()=>[]),fetchSheet("Teammate_Correlations").catch(()=>[]),fetchSheet("NBA_Status").catch(()=>[]),fetchSheet(performanceTabName()).catch(()=>[]),fetchSheet(performanceTabName()+"_Snapshots").catch(()=>[])])
+  return fetchSheet("NBA_Status").then(status=>Promise.all([fetchSheet("Tonights_Opponent").catch(()=>null),fetchSheet("Dashboard_Player_Stats").catch(()=>null),fetchSheet("DK_Player_Props").catch(()=>[]),fetchSheet("Home_Away_Splits").catch(()=>[]),fetchSheet("Daily_Picks").catch(()=>[]),fetchSheet("Teammate_Correlations").catch(()=>[]),fetchSheet(performanceTabName()).catch(()=>[]),fetchSheet(performanceTabName()+"_Snapshots").catch(()=>[])]).then(([tonight,stats,props,splits,picks,correlations,performance,snapshots])=>[tonight,stats,props,splits,picks,correlations,status,performance,snapshots]))
   .then(async ([tonight,stats,props,splits,picks,correlations,status,pickPerformance,pickPerformanceSnaps])=>{
-    const after=await fetchSheet("NBA_Status").catch(()=>[]);
+    const after=await fetchSheet("NBA_Status");
     const run=status?.[0]?.RUN_ID;
     st.feedStatus=evaluateFeed(normalizeKeys(cleanRows(status)));
     if(st.feedStatus.usable&&run&&(after?.[0]?.RUN_ID!==run||after[0].STATUS==="UPDATING"))throw new Error("Engine update changed during load");

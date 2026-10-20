@@ -6,17 +6,27 @@ const html=fs.readFileSync('index.html','utf8');
 const code=html.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/loadAllData\(\);\s*setInterval[\s\S]*$/,'');
 const app={innerHTML:''};
 let fixtures={};
+let requests=[];let transientFailures=0;
 const context=vm.createContext({
   URL,
   console:{log(){},warn(){},error(){}}, Date, AbortSignal,
   localStorage:{getItem(){return null},setItem(){}},
   document:{getElementById:id=>id==='app'?app:null,querySelectorAll:()=>[],body:{classList:{toggle(){}}}},
   fetch:async url=>{
-    const sheet=new URL(url).searchParams.get('sheet');
+    const parsed=new URL(url);const sheet=parsed.searchParams.get('sheet');requests.push({sheet,query:parsed.searchParams.get('tq')});
+    if(transientFailures>0){transientFailures--;throw new Error('Transient network failure')}
     if((fixtures.__failSheets||[]).includes(sheet))throw new Error('Fixture network failure');
     return {ok:true,text:async()=>JSON.stringify(fixtures[sheet]||[])};
   },
-  Papa:{parse:(text,options)=>options.complete({data:JSON.parse(text),errors:[],meta:{fields:[]}})},
+  Papa:{parse:(text,options)=>{
+    const data=JSON.parse(text);
+    // Match PapaParse's ISO timestamp coercion when dynamic typing is enabled.
+    for(const row of data)for(const [field,value] of Object.entries(row)){
+      const typed=typeof options.dynamicTyping==='function'?options.dynamicTyping(field):options.dynamicTyping;
+      if(typed&&typeof value==='string'&&/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(value))row[field]=new Date(value);
+    }
+    options.complete({data,errors:[],meta:{fields:[]}});
+  }},
 });
 vm.runInContext(code+'\nglobalThis.api={evaluateFeed,loadAllData,searchDashPlayer,getPlayerLogs,getState:()=>st,easternTodayISO,seasonForDate,normalizePlayerName,getConvergenceBoard,aiAgreesWithBet,buildCandidatePool,entryFindProp,playerAvailability,getBestBets,scoreCandidate,currentPerformanceRows,performanceTabName,entryLatestPicks};',context);
 const api=context.api;
@@ -55,7 +65,11 @@ function seed(status='READY'){
   assert.equal(api.evaluateFeed([]).usable,false);
   assert.equal(api.evaluateFeed([{...base,STATUS:'READY',SLATE_DATE:'2026-01-01'}]).usable,false);
   assert.equal(api.evaluateFeed([{...base,STATUS:'READY',UPDATED_AT_UTC:new Date(Date.now()-5*3600000).toISOString()}]).usable,false);
-  seed();await api.loadAllData();
+  seed();transientFailures=1;requests=[];await api.loadAllData();
+  assert.equal(api.getState().error,null,'one transient request failure is retried');
+  assert.equal(requests[0].sheet,'NBA_Status','status loads before bulk feeds');
+  assert.ok(requests.some(r=>r.sheet.startsWith('Pick_Performance_')&&r.query==='select * limit 0'));
+  assert.equal(requests.filter(r=>r.sheet.startsWith('Pick_Performance_')&&!r.query).length,0,'missing optional tabs never download fallback history');
   assert.equal(api.getState().error,null);
   assert.equal(api.getState().tonight.length,1);
   assert.equal(api.getState().playerStats.length,1);
