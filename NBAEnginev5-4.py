@@ -164,6 +164,7 @@ try:
     print(f"✅ Connected to Google Sheet: {SHEET_ID}")
     runlog = RunLogger(gc, SHEET_ID, sport='NBA', kind='engine')
     atexit.register(runlog.finalize_and_write)
+    runlog.install_exception_hook(on_failure=lambda: publish_status('FAILED') if 'publish_status' in globals() else None)
 except Exception as e:
     raise RuntimeError("Could not open NBA spreadsheet") from e
 

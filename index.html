@@ -589,6 +589,7 @@ function evaluateFeed(rows,now=Date.now(),today=easternTodayISO()){
   const warning=aging?" Saved prices and injury statuses may have changed; rerun the engine for updated data.":"";
   const dated={...context,aging,ageHours,updatedAtUTC:rawStamp};
   if(status.STATUS==="NO_GAMES")return {...dated,usable:false,text:"No NBA games scheduled for "+slate+". "+published};
+  if(status.STATUS==="FAILED")return {...dated,usable:false,text:"The latest NBA engine run failed. Check its error log and rerun after fixing the reported issue. "+published};
   if(status.STATUS==="WARMUP")return {...dated,usable:false,text:"Current-season player history is still building. "+published};
   if(!["READY","AWAITING_PROPS","DEGRADED"].includes(status.STATUS))return {...dated,usable:false,text:"NBA data is updating. Refresh shortly."};
   const detail=status.STATUS==="DEGRADED"?" Limited data: "+(status.WARNINGS||"a supporting feed is unavailable."):status.STATUS==="AWAITING_PROPS"?" Waiting for player markets.":"";

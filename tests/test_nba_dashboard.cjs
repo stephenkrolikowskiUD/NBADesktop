@@ -131,6 +131,7 @@ function seed(status='READY'){
   assert.match(api.getState().error,/Required slate feed/);assert.equal(api.getState().tonight.length,0);
   assert.doesNotMatch(app.innerHTML,/Check Google Sheet sharing settings/);
   assert.equal(api.evaluateFeed([{...base,STATUS:'READY',UPDATED_AT_UTC:''}]).usable,false,'locale timestamp cannot establish freshness');
+  seed('FAILED');await api.loadAllData();assert.match(app.innerHTML,/engine run failed/);assert.equal(api.getState().props.length,0);
   seed('WARMUP');await api.loadAllData();assert.match(app.innerHTML,/history is still building/);
   seed('UPDATING');await api.loadAllData();assert.equal(api.getState().props.length,0);
   seed();fixtures.NBA_Status[0].RUN_ID='new-run';await api.loadAllData();

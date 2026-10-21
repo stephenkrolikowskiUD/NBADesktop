@@ -10,6 +10,8 @@ from nba_api.stats.static import teams
 from nba_injuries import norm
 
 BASE='https://site.api.espn.com/apis/site/v2/sports/basketball/nba'
+# ESPN numeric team IDs verified against its public NBA team directory.
+ESPN_TEAM_IDS={'ATL':'1','BOS':'2','NOP':'3','CHI':'4','CLE':'5','DAL':'6','DEN':'7','DET':'8','GSW':'9','HOU':'10','IND':'11','LAC':'12','LAL':'13','MIA':'14','MIL':'15','MIN':'16','BKN':'17','NYK':'18','ORL':'19','PHI':'20','PHX':'21','POR':'22','SAC':'23','SAS':'24','OKC':'25','UTA':'26','WAS':'27','TOR':'28','MEM':'29','CHA':'30'}
 ALIASES={'GS':'GSW','NY':'NYK','NO':'NOP','SA':'SAS','UTAH':'UTA','WSH':'WAS','PHO':'PHX'}
 
 
@@ -56,9 +58,11 @@ def current_roster(games):
     import pandas as pd
     abbreviations=sorted({g[s]['teamTricode'] for g in games for s in ('homeTeam','awayTeam')})
     def fetch(team):
-        payload=_get(f'/teams/{team.lower()}/roster',ttl=3600)
+        team_id=ESPN_TEAM_IDS.get(team)
+        if not team_id:raise ValueError(f'No verified ESPN team ID for {team}')
+        payload=_get(f'/teams/{team_id}/roster',ttl=3600)
         if _abbr(payload.get('team',{}).get('abbreviation'))!=team or not payload.get('athletes'):
-            raise ValueError('Roster mismatch or missing athletes')
+            raise ValueError(f'Roster mismatch or missing athletes for {team} (ESPN team {team_id})')
         return [{'DISPLAY_FIRST_LAST':p['displayName'],'TEAM_ABBREVIATION':team,
                  'ESPN_PLAYER_ID':str(p['id'])} for p in payload['athletes']]
     with ThreadPoolExecutor(max_workers=4) as pool:return pd.DataFrame([r for part in pool.map(fetch,abbreviations) for r in part])

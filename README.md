@@ -111,3 +111,5 @@ Targeting tomorrow does not bypass availability or market validation. Official r
 The injury reader reconstructs PDF rows from their displayed coordinates, including reports whose extraction order is reversed. Regression tests include the public October 19, 2026 4:30 p.m. report. Teams marked `NOT YET SUBMITTED` remain unknown; a submitted team's unlisted players can pass the existing availability checks. Engine logs show report time, pending teams, availability counts, and report-fetch/parser failures. Game-level Vegas context is restricted to the target Eastern date and exact scheduled matchup before team rows are merged.
 
 Team logos are served locally from `assets/team-logos/`, sourced from the official NBA logo CDN. Abbreviations remain visible when an image is unavailable.
+
+ESPN roster fallback uses verified numeric team IDs for all 30 teams, avoiding NBA/ESPN abbreviation differences such as NOP/NO. Returned roster team identity is still checked. Uncaught engine errors publish `FAILED` when possible and record `CRASH` in Run_Log; the original traceback and failing process exit remain visible.

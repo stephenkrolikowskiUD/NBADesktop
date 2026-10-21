@@ -1,5 +1,5 @@
 """Run_Log heartbeat writer. One row per engine/grader run, written to Run_Log sheet."""
-import os, json
+import os, json, sys
 from datetime import datetime
 import pytz
 
@@ -32,6 +32,19 @@ class RunLogger:
         self.odds_credits_remaining = ""
         self.error = ""
         self.status = "OK"
+
+    def install_exception_hook(self, on_failure=None):
+        """Record uncaught failures before atexit writes the final heartbeat."""
+        previous_hook = sys.excepthook
+        def hook(exc_type, exc, traceback):
+            self.fail(exc)
+            if on_failure:
+                try:
+                    on_failure()
+                except Exception as status_error:
+                    print(f"⚠️ Could not publish failed status: {status_error}")
+            previous_hook(exc_type, exc, traceback)
+        sys.excepthook = hook
 
     def record_write(self, sheet_name, row_count):
         try:
