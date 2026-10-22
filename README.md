@@ -115,3 +115,5 @@ Team logos are served locally from `assets/team-logos/`, sourced from the offici
 ESPN roster fallback uses verified numeric team IDs for all 30 teams, avoiding NBA/ESPN abbreviation differences such as NOP/NO. Returned roster team identity is still checked. Uncaught engine errors publish `FAILED` when possible and record `CRASH` in Run_Log; the original traceback and failing process exit remain visible.
 
 GitHub schedules use `timezone: America/New_York`, following Eastern daylight-saving changes. The 2 a.m. grader advances to the next valid time on spring-forward day. Scheduled engine runs target `today`; manual runs retain the `slate_date` input and default `next`. Schedules become active after these workflows are pushed to the default branch. GitHub may start scheduled runs later than their nominal trigger time.
+
+Assists (AST) are eligible for AI selection alongside other supplied metrics. They use the same quoted-market and availability validation and the existing three-picks-per-metric cap; there is no AST-wide blacklist.

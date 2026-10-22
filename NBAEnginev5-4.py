@@ -2023,8 +2023,7 @@ RULES:
 - Players flagged B2B are on the second night of a back-to-back. Deprioritize them unless the edge is exceptional.
 - STAR players are the top 20 by season UD fantasy points in tonight's valid prop pool.
 - At least 5 of your 10 picks should come from STAR players. Bench players can fill the remaining slots only when they have exceptional edges.
-- Available prop types: PTS, REB, PRA, PR, PA, RA, FG3M, STL, BLK, UD_FP
-- Do NOT pick AST — excluded by the current configuration pending performance review.
+- Available prop types: PTS, REB, AST, PRA, PR, PA, RA, FG3M, STL, BLK, UD_FP
 - DIVERSIFY prop types: max 3 picks of the same prop type per slate. Mix in PTS, REB, FG3M, and the cleanest combo props.
 - Prefer PR over PRA when both are available for the same player.
 - PRA requires a stronger edge threshold than other props. If the PRA edge is only marginal, use LEAN or skip it.
@@ -2111,9 +2110,6 @@ IMPORTANT: Return ONLY the JSON array. No markdown, no preamble."""
                 lean = str(row.get('lean', '') or '').strip().upper()
                 conf = normalize_confidence(row.get('confidence'))
                 player_norm = normalizePlayerName(row.get('player', ''))
-                if prop_type == 'AST':
-                    dropped_prop_caps.append(f"{row.get('player', '?')} AST — blacklisted prop")
-                    continue
                 if prop_type == 'PRA' and player_norm in players_with_pr:
                     dropped_prop_caps.append(f"{row.get('player', '?')} PRA — PR preferred for same player")
                     continue

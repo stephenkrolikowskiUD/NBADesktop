@@ -124,7 +124,7 @@ class GraderTests(unittest.TestCase):
 
 
 class EngineTests(unittest.TestCase):
-    def run_engine(self, *, games=True, current_logs=True, logs_fail=False, ai=False, bad_line=False, slate_offset=0, public_source=False):
+    def run_engine(self, *, games=True, current_logs=True, logs_fail=False, ai=False, bad_line=False, slate_offset=0, public_source=False, prop_type="PTS"):
         today=datetime.now(ZoneInfo('America/New_York')).date().isoformat()
         target=(datetime.fromisoformat(today)+timedelta(days=slate_offset)).date().isoformat()
         season=season_for_date(today)
@@ -133,13 +133,14 @@ class EngineTests(unittest.TestCase):
         fresh=pd.DataFrame([log_row(today, points=12)]) if current_logs else seed.iloc[:0].copy()
         book=Workbook(seed)
         roster=pd.DataFrame([{'DISPLAY_FIRST_LAST':'Example Player','TEAM_ABBREVIATION':'LAL'}])
+        market_line=2.5 if prop_type=='AST' else 10.5
         event={'id':'today','commence_time':target+'T23:59:59-04:00','home_team':'Los Angeles Lakers','away_team':'New York Knicks'}
         def get(url, **kwargs):
             if url.endswith('/events'): return Response([event] if games else [])
             if url.endswith('/odds'):
-                markets=[{'key':'player_points','outcomes':[
-                    {'description':'Example Player','name':'Over','point':10.5,'price':-110},
-                    {'description':'Example Player','name':'Under','point':10.5,'price':-110}]}] if ai else []
+                markets=[{'key':'player_assists' if prop_type=='AST' else 'player_points','outcomes':[
+                    {'description':'Example Player','name':'Over','point':market_line,'price':-110},
+                    {'description':'Example Player','name':'Under','point':market_line,'price':-110}]}] if ai else []
                 return Response([] if '/events/' not in url else {'bookmakers':[{'key':'draftkings','markets':markets}]})
             raise AssertionError(f'Unexpected request {url}')
         nba_requests=[]
@@ -162,7 +163,7 @@ class EngineTests(unittest.TestCase):
             stack.enter_context(patch.object(nba_sources,'refresh_seed',return_value=pd.concat([seed,fresh],ignore_index=True)) if public_source else patch.object(nba_sources,'refresh_seed',side_effect=RuntimeError('Fresh NBA logs unavailable')))
             if ai:
                 pick={'rank':1,'player':'Example Player','team':'WRONG','game':'LAL @ NYK',
-                      'prop_type':'PTS','line':99.5 if bad_line else 10.5,'lean':'OVER',
+                      'prop_type':prop_type,'line':99.5 if bad_line else market_line,'lean':'OVER',
                       'confidence':'STRONG','rationale':'Fixture only','injury_context':''}
                 model=SimpleNamespace(generate_content=lambda **kwargs:SimpleNamespace(text=json.dumps([pick])))
                 stack.enter_context(patch('google.genai.Client',return_value=SimpleNamespace(models=model)))
@@ -213,6 +214,18 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(picks[0]['team'],'LAL')
         self.assertEqual(picks[0]['opponent'],'NYK')
         self.assertEqual(picks[0]['BOOK'],'draftkings')
+    def test_assist_pick_publishes_with_valid_market(self):
+        book,_=self.run_engine(ai=True,prop_type='AST')
+        picks=book.tabs['Daily_Picks'].get_all_records()
+        self.assertEqual(len(picks),1)
+        self.assertEqual(picks[0]['prop_type'],'AST')
+        self.assertEqual(picks[0]['line'],2.5)
+        self.assertTrue(picks[0]['MARKET_VALIDATED'])
+
+    def test_assist_pick_still_requires_exact_market(self):
+        book,_=self.run_engine(ai=True,prop_type='AST',bad_line=True)
+        self.assertNotIn('Daily_Picks',book.tabs)
+
     def test_future_slate_publishes_picks_for_target_date_with_prior_context(self):
         book,today=self.run_engine(ai=True,current_logs=False,slate_offset=1)
         target=(datetime.fromisoformat(today)+timedelta(days=1)).date().isoformat()
