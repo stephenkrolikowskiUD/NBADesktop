@@ -1,6 +1,9 @@
 name: NBA Engine
 
 on:
+  schedule:
+    - cron: '0 10,18,21 * * *'
+      timezone: America/New_York
   workflow_dispatch:
     inputs:
       slate_date:
@@ -18,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      NBA_SLATE_DATE: ${{ inputs.slate_date || 'next' }}
+      NBA_SLATE_DATE: ${{ github.event_name == 'schedule' && 'today' || inputs.slate_date || 'next' }}
       NBA_SHEET_ID: ${{ vars.NBA_SHEET_ID }}
       NBA_BACKUP_DIR: nba_backups
       ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}

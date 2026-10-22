@@ -1,6 +1,9 @@
 name: NBA Grader
 
 on:
+  schedule:
+    - cron: '0 2,10 * * *'
+      timezone: America/New_York
   workflow_dispatch:
 
 concurrency:

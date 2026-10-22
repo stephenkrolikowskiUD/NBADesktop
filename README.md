@@ -31,7 +31,7 @@ This repo is the GitHub Pages frontend for the NBA system. The engine writes dat
 
 ## Run Mode
 
-NBA currently runs manually in Colab. GitHub Actions workflow files exist, but `nba_api` calls are not reliable from GitHub Actions IP ranges.
+NBA runs through GitHub Actions on the Eastern-time schedule below, with manual workflow dispatch still available. NBA Stats requests can time out on runners; the engine uses verified ESPN fallbacks where configured.
 
 ## Data Sources
 
@@ -60,7 +60,7 @@ The launch fixes retain Stats, Game Entry, multi-book pricing, and the existing 
 
 The dashboard requires a dated, completed `NBA_Status` sheet from the updated engine. Deploy the engine and dashboard together; until the engine publishes that status, the dashboard withholds unverified or mixed snapshots. Availability that cannot be verified also withholds affected picks.
 
-Workflows remain manual. Engine and grader share a concurrency group to avoid overlapping sheet writes. Live authenticated execution and injury coverage still need launch QA.
+The engine runs daily at 10 a.m., 6 p.m., and 9 p.m. America/New_York time. The grader runs daily at 2 a.m. and 10 a.m.; the second pass catches late finals and corrections. Both retain manual dispatch and share a concurrency group to avoid overlapping sheet writes, including the simultaneous 10 a.m. triggers. Live authenticated execution and injury coverage still need launch QA.
 
 Offline checks (no live sheet writes):
 
@@ -113,3 +113,5 @@ The injury reader reconstructs PDF rows from their displayed coordinates, includ
 Team logos are served locally from `assets/team-logos/`, sourced from the official NBA logo CDN. Abbreviations remain visible when an image is unavailable.
 
 ESPN roster fallback uses verified numeric team IDs for all 30 teams, avoiding NBA/ESPN abbreviation differences such as NOP/NO. Returned roster team identity is still checked. Uncaught engine errors publish `FAILED` when possible and record `CRASH` in Run_Log; the original traceback and failing process exit remain visible.
+
+GitHub schedules use `timezone: America/New_York`, following Eastern daylight-saving changes. The 2 a.m. grader advances to the next valid time on spring-forward day. Scheduled engine runs target `today`; manual runs retain the `slate_date` input and default `next`. Schedules become active after these workflows are pushed to the default branch. GitHub may start scheduled runs later than their nominal trigger time.
