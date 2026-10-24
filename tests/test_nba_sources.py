@@ -74,8 +74,8 @@ class SourcesTests(unittest.TestCase):
         self.assertEqual(data.iloc[0]['SEASON'],'2025-26');self.assertEqual(meta.iloc[0]['CURRENT_GAMES'],0)
         self.assertNotIn('Rookie',list(meta['PLAYER_NAME']))
     def test_current_scope_never_mixes_prior(self):
-        rows=pd.DataFrame([{'PLAYER_NAME':'A','SEASON':'2025-26','PTS':99},{'PLAYER_NAME':'A','SEASON':'2026-27','PTS':10}])
-        data,meta=select_analysis_history(rows,'2026-27');self.assertEqual(list(data.PTS),[10])
+        rows=pd.DataFrame([{'PLAYER_NAME':'A','SEASON':'2025-26','PTS':99}]+[{'PLAYER_NAME':'A','SEASON':'2026-27','PTS':10}]*5)
+        data,meta=select_analysis_history(rows,'2026-27');self.assertEqual(list(data.PTS),[10]*5)
     def test_availability_unknown_and_stale_reports(self):
         now=datetime.now(timezone.utc);day=now.date().isoformat();people=[{'PLAYER_NAME':'A','CURRENT_TEAM':'BOS'}]
         self.assertEqual(nba_injuries.apply_availability(people,{},day,now)[0]['AVAILABILITY'],'UNKNOWN')

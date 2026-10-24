@@ -10,7 +10,7 @@ from pathlib import Path
 import runpy
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -124,7 +124,7 @@ class GraderTests(unittest.TestCase):
 
 
 class EngineTests(unittest.TestCase):
-    def run_engine(self, *, games=True, current_logs=True, logs_fail=False, ai=False, bad_line=False, slate_offset=0, public_source=False, prop_type="PTS"):
+    def run_engine(self, *, games=True, current_logs=True, logs_fail=False, ai=False, bad_line=False, slate_offset=0, public_source=False, prop_type="PTS", ai_error=None):
         today=datetime.now(ZoneInfo('America/New_York')).date().isoformat()
         target=(datetime.fromisoformat(today)+timedelta(days=slate_offset)).date().isoformat()
         season=season_for_date(today)
@@ -165,7 +165,7 @@ class EngineTests(unittest.TestCase):
                 pick={'rank':1,'player':'Example Player','team':'WRONG','game':'LAL @ NYK',
                       'prop_type':prop_type,'line':99.5 if bad_line else market_line,'lean':'OVER',
                       'confidence':'STRONG','rationale':'Fixture only','injury_context':''}
-                model=SimpleNamespace(generate_content=lambda **kwargs:SimpleNamespace(text=json.dumps([pick])))
+                model=SimpleNamespace(generate_content=Mock(side_effect=ai_error) if ai_error is not None else lambda **kwargs:SimpleNamespace(text=json.dumps([pick])))
                 stack.enter_context(patch('google.genai.Client',return_value=SimpleNamespace(models=model)))
             stack.enter_context(patch('time.sleep'))
             stack.enter_context(patch('atexit.register'))
@@ -177,6 +177,7 @@ class EngineTests(unittest.TestCase):
             except SystemExit as exc:
                 if exc.code not in (0,None): raise
         if public_source:self.assertEqual(nba_requests,[])
+        if ai_error is not None:self.assertEqual(model.generate_content.call_count,1)
         return book, today
     def test_scheduled_refresh_trade_and_season_isolation(self):
         book,today=self.run_engine()
@@ -206,6 +207,13 @@ class EngineTests(unittest.TestCase):
     def test_off_day_skips_unavailable_player_log_api(self):
         book,_=self.run_engine(games=False,logs_fail=True)
         self.assertEqual(book.tabs['NBA_Status'].get_all_records()[0]['STATUS'],'NO_GAMES')
+    def test_gemini_credit_failure_stops_after_one_pass_and_publishes_reason(self):
+        book,_=self.run_engine(ai=True,ai_error=RuntimeError('402 RESOURCE_EXHAUSTED: Your prepayment credits are depleted'))
+        self.assertNotIn('Daily_Picks',book.tabs)
+        status=book.tabs['NBA_Status'].get_all_records()[0]
+        self.assertEqual(status['STATUS'],'DEGRADED')
+        self.assertIn('Gemini prepaid credits depleted',status['WARNINGS'])
+
     def test_ai_pick_matches_market_and_uses_verified_team(self):
         book,_=self.run_engine(ai=True)
         picks=book.tabs['Daily_Picks'].get_all_records()

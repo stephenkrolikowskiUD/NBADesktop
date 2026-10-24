@@ -587,7 +587,8 @@ function evaluateFeed(rows,now=Date.now(),today=easternTodayISO()){
   const ageText=ageHours<1?`${Math.floor(ageHours*60)} min ago`:`${Math.floor(ageHours)}h ${Math.floor(ageHours%1*60)}m ago`;
   const published=`Last engine update: ${updated} (${ageText}).`;
   const warning=aging?" Saved prices and injury statuses may have changed; rerun the engine for updated data.":"";
-  const dated={...context,aging,ageHours,updatedAtUTC:rawStamp};
+  const aiUnavailableReason=/Gemini prepaid credits depleted/i.test(String(status.WARNINGS||''))?'AI picks are unavailable because the Gemini project has no prepaid credits. Add credit in Google AI Studio, then rerun the engine.':'';
+  const dated={...context,aging,ageHours,updatedAtUTC:rawStamp,aiUnavailableReason};
   if(status.STATUS==="NO_GAMES")return {...dated,usable:false,text:"No NBA games scheduled for "+slate+". "+published};
   if(status.STATUS==="FAILED")return {...dated,usable:false,text:"The latest NBA engine run failed. Check its error log and rerun after fixing the reported issue. "+published};
   if(status.STATUS==="WARMUP")return {...dated,usable:false,text:"Current-season player history is still building. "+published};
@@ -628,6 +629,14 @@ function getHitRate(name,metric,line){
     over,under,push,nonPush,total:logs.length
   };
 }
+function renderHitRateCell(name,metric,line){
+  const logs=getPlayerLogs(name),rate=getHitRate(name,metric,parseFloat(line));
+  if(!rate)return `<span style="font-size:10px;color:#9ca3af">${logs.length?`${logs.length}/5 games`:'No history'}</span>`;
+  const info=searchablePlayers().find(row=>normalizePlayerName(row.PLAYER_NAME)===normalizePlayerName(name))||{};
+  const season=info.ANALYSIS_SEASON||logs[0]?.SEASON||'';
+  return `${rate.nonPush?(rate.overRate*100).toFixed(0)+'%':'All pushes'}<div style="font-size:9px;color:#9ca3af;font-weight:400" title="${rate.nonPush} non-push games; ${rate.push} pushes">${esc(season)} · ${logs.length} games${info.BASELINE_TYPE==='PRIOR_SEASON'?' · prior':''}</div>`;
+}
+
 function getBestBets(){
   return getMemo("bestBets",()=>{if(!st.props.length||!st.playerStats.length)return[];const bets=[];const tSet=new Set(st.tonight.map(p=>normalizePlayerName(p.PLAYER_NAME)).filter(Boolean));
   for(const p of st.props){const name=cleanName(p.PLAYER_NAME),nameKey=normalizePlayerName(p.PLAYER_NAME);if(!name||!nameKey||!tSet.has(nameKey)||playerAvailability(name)!=="AVAILABLE")continue;const metric=p.METRIC;const line=parseFloat(p.DK_LINE);if(isNaN(line))continue;
@@ -1160,7 +1169,7 @@ function render(){
 
   // Early season banner (ported from MLB)
   const researchContext=searchablePlayers().find(p=>normalizePlayerName(p.PLAYER_NAME)===playerKey)||{};
-  const priorBanner=researchContext.BASELINE_TYPE==="PRIOR_SEASON"?`<div class="early-banner"><div class="icon">🌱</div><div class="msg">Prior-season baseline · ${esc(researchContext.ANALYSIS_SEASON)}</div><div class="sub">${esc(player)} has no current-season game logs yet. Charts and averages below are from last season.${st.feedStatus?.usable?" Current team and matchup are updated.":" Live matchup and market context is withheld."}</div></div>`:"";
+  const priorBanner=researchContext.BASELINE_TYPE==="PRIOR_SEASON"?`<div class="early-banner"><div class="icon">🌱</div><div class="msg">Prior-season baseline · ${esc(researchContext.ANALYSIS_SEASON)}</div><div class="sub">${esc(player)} has ${toNum(researchContext.CURRENT_GAMES)} current-season game${toNum(researchContext.CURRENT_GAMES)===1?'':'s'}; five are needed before switching baselines. Charts and averages below use ${esc(researchContext.ANALYSIS_SEASON)} only.${st.feedStatus?.usable?" Current team and matchup are updated.":" Live matchup and market context is withheld."}</div></div>`:"";
   const earlyBanner=priorBanner||(!pHasLogs&&player?`<div class="early-banner"><div class="icon">🌱</div><div class="msg">Early Season — No Game Logs Yet</div><div class="sub">${esc(player)} is on the active roster. Matchup info and available props are shown; no game averages are invented.</div></div>`:"");
 
   // Pick banner for dash
@@ -1236,7 +1245,7 @@ function render(){
 
     }else if(picksView==="ai"){
       const pickGuard=st.pickGuard;
-      if(!aiPicks.length)picksHTML=picksIntro+renderPickGuard(pickGuard)+`<div class="no-data" style="padding:40px;text-align:center">No AI picks for today.</div>`;
+      if(!aiPicks.length)picksHTML=picksIntro+renderPickGuard(pickGuard)+`<div class="no-data" style="padding:40px;text-align:center">${esc(st.feedStatus?.aiUnavailableReason||"No AI picks for today.")}</div>`;
       else{const smash=aiPicks.filter(p=>normalizeConfidence(p.confidence)==="SMASH").length;
         picksHTML=picksIntro+renderPickGuard(pickGuard)+`<div class="picks-summary"><div class="ps-card"><div class="ps-val">${aiPicks.length}</div><div class="ps-lbl">PICKS</div></div><div class="ps-card"><div class="ps-val">${smash}</div><div class="ps-lbl">SMASH</div></div></div><div class="cards-grid">`;
         picksHTML+=aiPicks.map((pk,i)=>{const c=normalizeConfidence(pk.confidence),cls=getAIConfClass(c),rb=cls==="smash"?"#22c55e":cls==="strong"?"#eab308":"#ef4444";const flags=getSampleFlags(pk.player);const badges=riskBadges(pk.player);
@@ -1299,7 +1308,7 @@ function render(){
       <div style="padding:0 16px;color:#9ca3af;font-size:10px;margin-bottom:4px">${srch.length} props${srch.length>200?" (showing 200)":""}</div>
       <div class="props-tbl-wrap"><table><thead><tr><th>Player</th><th>Prop</th><th>Line</th><th>Over</th><th>Under</th><th>Hit%</th><th>Edge</th></tr></thead><tbody>${sorted.map(p=>{
         const hr=getHitRate(p.PLAYER_NAME,p.METRIC,parseFloat(p.DK_LINE));const oIP=impliedProb(parseInt(p.OVER_ODDS));
-        const flags=getSampleFlags(p.PLAYER_NAME);const hrP=hr?`${(hr.overRate*100).toFixed(0)}%`:"—";const ev=hr&&oIP!==null?hr.overRate-oIP:null;
+        const flags=getSampleFlags(p.PLAYER_NAME);const hrP=renderHitRateCell(p.PLAYER_NAME,p.METRIC,p.DK_LINE);const ev=hr&&oIP!==null?hr.overRate-oIP:null;
         const evS=ev!==null?`<span class="ev-badge ${ev>0.08?"ev-pos":ev>0?"ev-neutral":"ev-neg"}">${ev>0?"+":""}${(ev*100).toFixed(0)}%</span>`:"—";
         const locked=getLockInfo(p.PLAYER_NAME).started;return`<tr class="${flags.returning?"props-returning":""}${locked?" props-locked":""}"><td style="text-align:left;font-weight:600">${playerLink(p.PLAYER_NAME,p.METRIC,p.DK_LINE)}${flags.returning?` <span class="risk-badge risk-returning">⚠️</span>`:flags.limited?` <span class="risk-badge risk-limited">⚠️</span>`:""}${locked?` <span class="locked-badge">🔒</span>`:""}</td><td><span style="color:#eab308;font-weight:600">${p.METRIC}</span></td><td style="font-weight:700">${p.DK_LINE}</td><td class="${parseInt(p.OVER_ODDS)<=-130?"odds-over":parseInt(p.OVER_ODDS)>=130?"odds-under":"odds-even"}">${fmtOdds(p.OVER_ODDS)}</td><td class="${parseInt(p.UNDER_ODDS)<=-130?"odds-over":parseInt(p.UNDER_ODDS)>=130?"odds-under":"odds-even"}">${fmtOdds(p.UNDER_ODDS)}</td><td style="font-weight:600">${hrP}</td><td>${evS}</td></tr>${renderPropBestBookTableRow(p,7)}`}).join("")}</tbody></table></div>`;
     }

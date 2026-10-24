@@ -5,13 +5,14 @@ from pathlib import Path
 import hashlib
 import json
 import os
+import math
 import requests
 from nba_api.stats.static import teams
 from nba_injuries import norm
 
 BASE='https://site.api.espn.com/apis/site/v2/sports/basketball/nba'
 # ESPN numeric team IDs verified against its public NBA team directory.
-ESPN_TEAM_IDS={'ATL':'1','BOS':'2','NOP':'3','CHI':'4','CLE':'5','DAL':'6','DEN':'7','DET':'8','GSW':'9','HOU':'10','IND':'11','LAC':'12','LAL':'13','MIA':'14','MIL':'15','MIN':'16','BKN':'17','NYK':'18','ORL':'19','PHI':'20','PHX':'21','POR':'22','SAC':'23','SAS':'24','TOR':'25','UTA':'26','WAS':'27','MEM':'28','OKC':'29','DEN':'7','NJN':'17','CHA':'30','MIA':'14'}
+ESPN_TEAM_IDS={'ATL':'1','BOS':'2','NOP':'3','CHI':'4','CLE':'5','DAL':'6','DEN':'7','DET':'8','GSW':'9','HOU':'10','IND':'11','LAC':'12','LAL':'13','MIA':'14','MIL':'15','MIN':'16','BKN':'17','NYK':'18','ORL':'19','PHI':'20','PHX':'21','POR':'22','SAC':'23','SAS':'24','OKC':'25','UTA':'26','WAS':'27','TOR':'28','MEM':'29','CHA':'30'}
 ALIASES={'GS':'GSW','NY':'NYK','NO':'NOP','SA':'SAS','UTAH':'UTA','WSH':'WAS','PHO':'PHX'}
 
 
@@ -76,55 +77,71 @@ def align_roster_names(roster, history):
     return out
 
 
-def final_boxes(date):
-    """Return only complete final boxes, including explicitly listed DNPs."""
+def _played_number(value,minutes=False):
+    try:
+        if minutes and ':' in str(value):
+            whole,seconds=str(value).split(':')
+            if not 0<=float(seconds)<60:return None
+            number=float(whole)+float(seconds)/60
+        else:number=float(value)
+        return number if math.isfinite(number) and number>=0 else None
+    except (ValueError,TypeError):return None
+
+
+def _final_game_rows(game,date,on_error=None):
+    event=game['ESPN_EVENT_ID'];payload=_get('/summary',{'event':event},ttl=300)
+    competitions=payload.get('header',{}).get('competitions',[])
+    comp=competitions[0] if competitions else {}
+    boxes=payload.get('boxscore',{}).get('players',[])
+    if str(comp.get('id'))!=event or not comp.get('status',{}).get('type',{}).get('completed') or len(boxes)!=2:
+        raise ValueError('Final box is incomplete')
+    expected={game['homeTeam']['teamTricode'],game['awayTeam']['teamTricode']}
+    if {_abbr(side.get('team',{}).get('abbreviation')) for side in boxes}!=expected:
+        raise ValueError('Final box team identities do not match schedule')
+    game_rows=[]
+    for side in boxes:
+        team=_abbr(side['team']['abbreviation']);home=team==game['homeTeam']['teamTricode']
+        opponent=game['awayTeam' if home else 'homeTeam']['teamTricode']
+        blocks=side.get('statistics',[]);block=blocks[0] if blocks else {}
+        athletes=block.get('athletes',[])
+        if len(athletes)<5:raise ValueError('Incomplete final player list')
+        for person_row in athletes:
+            person=person_row.get('athlete',{})
+            stats=dict(zip(block.get('labels',[]),person_row.get('stats',[])))
+            dnp=person_row.get('didNotPlay') is True
+            row={'PLAYER_NAME':person.get('displayName',''),'ESPN_PLAYER_ID':str(person.get('id','')),
+                 'GAME_ID':'ESPN:'+event,'ESPN_EVENT_ID':event,'TEAM_ABBREVIATION':team,'GAME_DATE':date,
+                 'MATCHUP':f'{team} vs. {opponent}' if home else f'{team} @ {opponent}',
+                 'GAME_OPP':opponent,'FINAL':True,'DNP':dnp,'SOURCE':'ESPN final box','WL':''}
+            for dest,label in {'MIN':'MIN','PTS':'PTS','REB':'REB','AST':'AST','STL':'STL','BLK':'BLK','TOV':'TO'}.items():
+                row[dest]=_played_number(stats.get(label),minutes=dest=='MIN')
+            for label,made,attempt in [('FG','FGM','FGA'),('3PT','FG3M','FG3A'),('FT','FTM','FTA')]:
+                pieces=str(stats.get(label,'')).split('-')
+                row[made]=_played_number(pieces[0]) if len(pieces)==2 else None
+                row[attempt]=_played_number(pieces[1]) if len(pieces)==2 else None
+                if row[made] is not None and row[attempt] is not None and row[made]>row[attempt]:row[made]=row[attempt]=None
+            required=('MIN','PTS','REB','AST','STL','BLK','TOV','FG3M','FG3A','FGM','FGA','FTM','FTA')
+            missing=[key for key in required if row.get(key) is None] if not dnp else []
+            if not row['PLAYER_NAME'] or not row['ESPN_PLAYER_ID']:missing.append('player identity')
+            if missing:
+                reason=f"Final box contains incomplete played statistics for {row['PLAYER_NAME']}: {', '.join(missing)}"
+                if on_error:
+                    on_error({'date':date,'event':event,'team':team,'player':row['PLAYER_NAME'],'reason':reason})
+                    continue
+                raise ValueError(reason)
+            game_rows.append(row)
+    return game_rows
+
+
+def final_boxes(date,on_error=None):
+    """Strict for grading; refresh callers can retain valid rows and report gaps."""
     output=[]
     for game in schedule(date):
         if game['gameStatus']!=3:continue
-        event=game['ESPN_EVENT_ID']
-        try:
-            payload=_get('/summary',{'event':event},ttl=300)
-            comp=payload.get('header',{}).get('competitions',[{}])[0]
-            boxes=payload.get('boxscore',{}).get('players',[])
-            if str(comp.get('id'))!=event or not comp.get('status',{}).get('type',{}).get('completed') or len(boxes)!=2:
-                raise ValueError('Final box is incomplete')
-        except ValueError as exc:
-            print(f"Skipping malformed ESPN final box for event {event} on {date}: {exc}")
-            continue
-        game_rows=[]
-        for side in boxes:
-            try:
-                team=_abbr(side['team']['abbreviation']);home=team==game['homeTeam']['teamTricode']
-                opponent=game['awayTeam' if home else 'homeTeam']['teamTricode']
-                block=side.get('statistics',[{}])[0];athletes=block.get('athletes',[])
-                if len(athletes)<5:
-                    raise ValueError('Incomplete final player list')
-                for p in athletes:
-                    person=p.get('athlete',{});stats=dict(zip(block.get('labels',[]),p.get('stats',[])))
-                    dnp=bool(p.get('didNotPlay'))
-                    row={'PLAYER_NAME':person.get('displayName',''),'ESPN_PLAYER_ID':str(person.get('id','')),
-                         'GAME_ID':'ESPN:'+event,'ESPN_EVENT_ID':event,'TEAM_ABBREVIATION':team,'GAME_DATE':date,
-                         'MATCHUP':f'{team} vs. {opponent}' if home else f'{team} @ {opponent}',
-                         'GAME_OPP':opponent,'FINAL':True,'DNP':dnp,'SOURCE':'ESPN final box','WL':''}
-                    for dest,label in {'MIN':'MIN','PTS':'PTS','REB':'REB','AST':'AST','STL':'STL','BLK':'BLK','TOV':'TO'}.items():
-                        value=stats.get(label)
-                        try:row[dest]=float(value)
-                        except (TypeError,ValueError):row[dest]=None
-                    for label,made,attempt in [('FG','FGM','FGA'),('3PT','FG3M','FG3A'),('FT','FTM','FTA')]:
-                        pieces=str(stats.get(label,'')).split('-')
-                        try:row[made],row[attempt]=map(float,pieces)
-                        except (ValueError,TypeError):row[made]=row[attempt]=None
-                    if not dnp:
-                        required=('MIN','PTS','REB','AST','STL','BLK','TOV','FG3M')
-                        missing=[k for k in required if row.get(k) is None]
-                        if missing:
-                            print(f"Skipping incomplete ESPN final-box row for {row.get('PLAYER_NAME')} on {date}; missing {missing}")
-                            continue
-                    game_rows.append(row)
-            except ValueError as exc:
-                print(f"Skipping malformed ESPN side for event {event} on {date}: {exc}")
-                continue
-        output.extend(game_rows)
+        try:output.extend(_final_game_rows(game,date,on_error))
+        except (ValueError,requests.RequestException,KeyError,TypeError,IndexError) as error:
+            if not on_error:raise
+            on_error({'date':date,'event':game.get('ESPN_EVENT_ID',''),'reason':str(error)})
     return output
 
 
@@ -135,13 +152,21 @@ def refresh_seed(existing,date,season):
     # Season boundaries use September, so exclude spring rows from the previous season.
     current=current[pd.to_datetime(current['GAME_DATE'],errors='coerce')>=pd.Timestamp(int(season[:4]),9,1)]
     latest=pd.to_datetime(current['GAME_DATE'],errors='coerce').max()
-    start=(latest.date()-timedelta(days=2)) if pd.notna(latest) else datetime(int(season[:4]),10,1).date()
+    season_start=datetime(int(season[:4]),10,1).date()
+    start=max(season_start,latest.date()-timedelta(days=7)) if pd.notna(latest) else season_start
     end=datetime.fromisoformat(date).date()
     dates=[(start+timedelta(days=i)).isoformat() for i in range(max(0,(end-start).days))]
-    def fetch(day):return [r for r in final_boxes(day) if not r['DNP']]
+    issues=[]
+    def fetch(day):
+        try:return [row for row in final_boxes(day,on_error=issues.append) if not row['DNP']]
+        except (ValueError,requests.RequestException,KeyError,TypeError,IndexError) as error:
+            issues.append({'date':day,'event':'','reason':str(error)})
+            return []
     with ThreadPoolExecutor(max_workers=4) as pool:parts=list(pool.map(fetch,dates))
     fresh=pd.DataFrame([r for part in parts for r in part])
-    if fresh.empty:return existing.copy()
+    if fresh.empty:
+        result=existing.copy();result.attrs['REFRESH_WARNINGS']=issues
+        return result
     # Resolve NBA IDs from the existing seed; ESPN IDs remain separate.
     known=existing.dropna(subset=['PLAYER_ID']).copy()
     known['PERSON_KEY']=known['PLAYER_NAME'].map(norm)
@@ -153,4 +178,6 @@ def refresh_seed(existing,date,season):
     fresh['PLAYER_NAME']=fresh['PERSON_KEY'].map(known['PLAYER_NAME']).fillna(fresh['PLAYER_NAME'])
     fresh['PLAYER_ID']=fresh['PLAYER_ID'].fillna(-pd.to_numeric(fresh['ESPN_PLAYER_ID'],errors='coerce'))
     fresh=fresh.drop(columns='PERSON_KEY')
-    return pd.concat([existing,fresh],ignore_index=True).drop_duplicates(['PLAYER_NAME','GAME_DATE','TEAM_ABBREVIATION'],keep='last')
+    result=pd.concat([existing,fresh],ignore_index=True).drop_duplicates(['PLAYER_NAME','GAME_DATE','TEAM_ABBREVIATION'],keep='last')
+    result.attrs['REFRESH_WARNINGS']=issues
+    return result

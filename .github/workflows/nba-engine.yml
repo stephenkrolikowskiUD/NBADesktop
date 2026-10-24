@@ -24,6 +24,7 @@ jobs:
       NBA_SLATE_DATE: ${{ github.event_name == 'schedule' && 'today' || inputs.slate_date || 'next' }}
       NBA_SHEET_ID: ${{ vars.NBA_SHEET_ID }}
       NBA_BACKUP_DIR: nba_backups
+      NBA_PLAYER_LOG_SOURCE: espn
       ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}

@@ -20,7 +20,7 @@ from nba_api.stats.static import teams
 from run_logger import RunLogger
 import nba_sources
 import nba_injuries
-from nba_readiness import season_for_date, event_is_on_date, validate_market_picks, replace_sheet_values, select_analysis_history, finite_odds_probability, non_push_rate, selection_key, is_actionable_player, dashboard_stats, PERFORMANCE_POLICY, resolve_slate, slate_market_events
+from nba_readiness import season_for_date, event_is_on_date, validate_market_picks, replace_sheet_values, select_analysis_history, finite_odds_probability, non_push_rate, selection_key, is_actionable_player, dashboard_stats, PERFORMANCE_POLICY, resolve_slate, slate_market_events, gemini_billing_exhausted
 
 # --- 1. AUTHENTICATION & SETUP ---
 print("Authenticating with Google...")
@@ -791,7 +791,14 @@ if log_source == 'espn' and not existing_player_logs.empty:
         df_logs_api = nba_sources.refresh_seed(existing_player_logs, datetime.now(pytz.timezone('US/Eastern')).strftime('%Y-%m-%d'), NBA_SEASON)
         public_logs_ready = True
         print('✅ Refreshed seeded history through ESPN final boxes; skipping stats.nba.com on this runner')
+        refresh_issues=df_logs_api.attrs.get('REFRESH_WARNINGS',[])
+        if refresh_issues:
+            PUBLICATION_WARNINGS.append(f'Game-log refresh skipped {len(refresh_issues)} incomplete records/games; retained verified history')
+            for issue in refresh_issues[:10]:
+                detail=f"{issue.get('date')} event {issue.get('event')} {issue.get('player','')}: {issue.get('reason')}"
+                print('   ⚠️ '+detail);runlog.warn(detail)
     except Exception as e:
+        print(f'⚠️ ESPN history refresh unavailable: {type(e).__name__}: {e}')
         runlog.warn(f'ESPN history refresh unavailable: {type(e).__name__}; trying NBA Stats')
 for season_type in ([] if public_logs_ready else ['Regular Season', 'PlayIn', 'Playoffs']):
     try:
@@ -943,7 +950,7 @@ if games_list:
         raise RuntimeError('Current-season roster unavailable; refusing historical team assignments')
 df_player_final = df_player_final.merge(current_teams, on='PLAYER_NAME', how='left')
 df_player_upload = df_player_final.copy()
-# Opening week uses an explicitly labeled prior season only when current logs do not exist.
+# Keep an unmixed, labeled prior baseline until five current-season games exist.
 df_logs, history_metadata = select_analysis_history(df_logs, NBA_SEASON)
 df_player_final = df_player_final.merge(history_metadata, on='PLAYER_NAME', how='inner')
 df_player_final = df_player_final[df_player_final['SEASON'] == df_player_final['ANALYSIS_SEASON']].copy()
@@ -1088,7 +1095,7 @@ if not df_odds.empty:
 
 now_est = datetime.now(pytz.timezone('US/Eastern'))
 yesterday_str = (pd.Timestamp(today_str) - pd.Timedelta(days=1)).strftime('%Y-%m-%d')
-team_last_game = df_logs.sort_values('GAME_DATE').groupby('TEAM_ABBREVIATION')['GAME_DATE'].max().astype(str).to_dict() if not df_logs.empty else {}
+team_last_game = df_player_upload.sort_values('GAME_DATE').groupby('TEAM_ABBREVIATION')['GAME_DATE'].max().astype(str).to_dict() if not df_player_upload.empty else {}
 df_tonight_sheet['B2B'] = df_tonight_sheet['TEAM_ABBREVIATION'].map(lambda t: str(team_last_game.get(t, '')) == yesterday_str)
 
 df_tonight_sheet = df_tonight_sheet.merge(df_sample_flags.drop(columns=['PLAYER_ID']), on='PLAYER_NAME', how='left')
@@ -2081,6 +2088,8 @@ IMPORTANT: Return ONLY the JSON array. No markdown, no preamble."""
                 print(f"   ⚠️ Run {run_idx} returned malformed JSON — ignoring that pass")
             except Exception as e:
                 print(f"   ⚠️ Run {run_idx} failed: {e}")
+                if gemini_billing_exhausted(e):
+                    raise RuntimeError('Gemini prepaid credits depleted; add credit to the configured project in Google AI Studio before rerunning AI picks') from e
         if not consensus_pick_lists:
             raise RuntimeError("All Gemini passes failed")
         picks_data = build_consensus_pick_pool(consensus_pick_lists)
@@ -2271,8 +2280,9 @@ IMPORTANT: Return ONLY the JSON array. No markdown, no preamble."""
         print(f"Raw: {raw[:500]}")
     except Exception as e:
         df_picks = pd.DataFrame()
-        PUBLICATION_WARNINGS.append('AI pick generation failed; no picks published from this run')
-        runlog.warn(f'AI pick generation failed: {type(e).__name__}')
+        reason=f'AI picks unavailable: {e}' if 'Gemini prepaid credits depleted' in str(e) else f'AI pick generation failed: {type(e).__name__}: {str(e)[:180]}'
+        PUBLICATION_WARNINGS.append(reason)
+        runlog.warn(reason)
         print(f"❌ AI Picks failed: {e}")
 else:
     if not GEMINI_API_KEY:

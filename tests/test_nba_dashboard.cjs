@@ -28,7 +28,7 @@ const context=vm.createContext({
     options.complete({data,errors:[],meta:{fields:[]}});
   }},
 });
-vm.runInContext(code+'\nglobalThis.api={evaluateFeed,loadAllData,searchDashPlayer,getPlayerLogs,getStreaks,render,teamBadge,matchupBadges,getLockInfo,refreshGameLocks,getState:()=>st,easternTodayISO,seasonForDate,normalizePlayerName,getConvergenceBoard,aiAgreesWithBet,buildCandidatePool,entryFindProp,playerAvailability,getBestBets,scoreCandidate,currentPerformanceRows,performanceTabName,entryLatestPicks};',context);
+vm.runInContext(code+'\nglobalThis.api={evaluateFeed,loadAllData,searchDashPlayer,getPlayerLogs,renderHitRateCell,getStreaks,render,teamBadge,matchupBadges,getLockInfo,refreshGameLocks,getState:()=>st,easternTodayISO,seasonForDate,normalizePlayerName,getConvergenceBoard,aiAgreesWithBet,buildCandidatePool,entryFindProp,playerAvailability,getBestBets,scoreCandidate,currentPerformanceRows,performanceTabName,entryLatestPicks};',context);
 const api=context.api;
 const today=api.easternTodayISO();
 const stamp=new Date().toISOString();
@@ -58,6 +58,15 @@ function seed(status='READY'){
   }
   assert.match(api.teamBadge('BOS'),/assets\/team-logos\/BOS.svg/);assert.match(api.teamBadge('BRK'),/BKN.svg/);
   assert.equal(api.teamBadge('<bad>'),'&lt;BAD&gt;');assert.match(api.matchupBadges('BOS @ DET'),/DET.svg/);
+  seed('DEGRADED');fixtures.NBA_Status[0].WARNINGS='AI picks unavailable: Gemini prepaid credits depleted';
+  await api.loadAllData();api.getState().activeTab='picks';api.getState().picksView='ai';api.render();
+  assert.match(app.innerHTML,/Gemini project has no prepaid credits/);
+  seed();fixtures.Tonights_Opponent[0].ANALYSIS_SEASON='2025-26';fixtures.Tonights_Opponent[0].BASELINE_TYPE='PRIOR_SEASON';fixtures.Tonights_Opponent[0].CURRENT_GAMES=1;
+  fixtures.Dashboard_Player_Stats=[0,1,2,3,4,5].map(i=>({...player,SEASON:'2025-26',GAME_DATE:`2026-04-${20-i}`,PTS:25}));
+  await api.loadAllData();assert.match(api.renderHitRateCell(player.PLAYER_NAME,'PTS',20.5),/100%/);
+  assert.match(api.renderHitRateCell(player.PLAYER_NAME,'PTS',20.5),/2025-26 · 6 games · prior/);
+  api.getState().activeTab='dashboard';api.render();assert.match(app.innerHTML,/1 current-season game/);
+  seed();await api.loadAllData();assert.match(api.renderHitRateCell(player.PLAYER_NAME,'PTS',20.5),/1\/5 games/);
   const legacy={SEASON:'2025-26',PERFORMANCE_POLICY:'nba-market-provenance-v1',ROI_METHOD:'EQUAL_UNIT_RECORDED_ODDS'};
   const current={...legacy,SEASON:base.SEASON};
   assert.equal(api.currentPerformanceRows([legacy,current]).length,1);

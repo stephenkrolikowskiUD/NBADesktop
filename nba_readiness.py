@@ -168,8 +168,8 @@ def replace_sheet_values(ws, values):
         ws.batch_clear(ranges)
 
 
-def select_analysis_history(frame, season):
-    """Use current-season rows when present; otherwise label one prior-season baseline."""
+def select_analysis_history(frame, season, min_current_games=5):
+    """Use an unmixed prior baseline until current history reaches the minimum sample."""
     import pandas as pd
     year=int(season[:4])-1
     prior=f'{year}-{str(year+1)[-2:]}'
@@ -177,12 +177,13 @@ def select_analysis_history(frame, season):
     for name,group in frame.groupby('PLAYER_NAME'):
         current=group[group['SEASON']==season]
         previous=group[group['SEASON']==prior]
-        scope=season if not current.empty else prior
-        rows=current if not current.empty else previous
+        use_current=len(current)>=min_current_games or previous.empty
+        scope=season if use_current else prior
+        rows=current if use_current else previous
         if rows.empty:continue
         selected.append(rows)
         metadata.append({'PLAYER_NAME':name,'ANALYSIS_SEASON':scope,
-                         'BASELINE_TYPE':'CURRENT' if not current.empty else 'PRIOR_SEASON',
+                         'BASELINE_TYPE':'CURRENT' if use_current else 'PRIOR_SEASON',
                          'CURRENT_GAMES':len(current),'PRIOR_GAMES':len(previous)})
     data=pd.concat(selected,ignore_index=True) if selected else frame.iloc[:0].copy()
     info=pd.DataFrame(metadata,columns=['PLAYER_NAME','ANALYSIS_SEASON','BASELINE_TYPE','CURRENT_GAMES','PRIOR_GAMES'])
@@ -243,3 +244,9 @@ def backup_values(values,title='worksheet'):
     target=directory/(datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')+'-'+uuid.uuid4().hex[:6]+'-'+title+'.json')
     target.write_text(json.dumps(values,ensure_ascii=False,default=str))
     return target
+
+
+def gemini_billing_exhausted(error):
+    code=getattr(error,'code',None)
+    text=str(error).lower()
+    return str(code)=='402' or ('402' in text and ('resource_exhausted' in text or 'prepay' in text)) or ('prepayment credits' in text and 'depleted' in text)
