@@ -11,7 +11,7 @@ from nba_injuries import norm
 
 BASE='https://site.api.espn.com/apis/site/v2/sports/basketball/nba'
 # ESPN numeric team IDs verified against its public NBA team directory.
-ESPN_TEAM_IDS={'ATL':'1','BOS':'2','NOP':'3','CHI':'4','CLE':'5','DAL':'6','DEN':'7','DET':'8','GSW':'9','HOU':'10','IND':'11','LAC':'12','LAL':'13','MIA':'14','MIL':'15','MIN':'16','BKN':'17','NYK':'18','ORL':'19','PHI':'20','PHX':'21','POR':'22','SAC':'23','SAS':'24','OKC':'25','UTA':'26','WAS':'27','TOR':'28','MEM':'29','CHA':'30'}
+ESPN_TEAM_IDS={'ATL':'1','BOS':'2','NOP':'3','CHI':'4','CLE':'5','DAL':'6','DEN':'7','DET':'8','GSW':'9','HOU':'10','IND':'11','LAC':'12','LAL':'13','MIA':'14','MIL':'15','MIN':'16','BKN':'17','NYK':'18','ORL':'19','PHI':'20','PHX':'21','POR':'22','SAC':'23','SAS':'24','TOR':'25','UTA':'26','WAS':'27','MEM':'28','OKC':'29','DEN':'7','NJN':'17','CHA':'30','MIA':'14'}
 ALIASES={'GS':'GSW','NY':'NYK','NO':'NOP','SA':'SAS','UTAH':'UTA','WSH':'WAS','PHO':'PHX'}
 
 
@@ -81,35 +81,49 @@ def final_boxes(date):
     output=[]
     for game in schedule(date):
         if game['gameStatus']!=3:continue
-        event=game['ESPN_EVENT_ID'];payload=_get('/summary',{'event':event},ttl=300)
-        comp=payload.get('header',{}).get('competitions',[{}])[0]
-        boxes=payload.get('boxscore',{}).get('players',[])
-        if str(comp.get('id'))!=event or not comp.get('status',{}).get('type',{}).get('completed') or len(boxes)!=2:
-            raise ValueError('Final box is incomplete')
+        event=game['ESPN_EVENT_ID']
+        try:
+            payload=_get('/summary',{'event':event},ttl=300)
+            comp=payload.get('header',{}).get('competitions',[{}])[0]
+            boxes=payload.get('boxscore',{}).get('players',[])
+            if str(comp.get('id'))!=event or not comp.get('status',{}).get('type',{}).get('completed') or len(boxes)!=2:
+                raise ValueError('Final box is incomplete')
+        except ValueError as exc:
+            print(f"Skipping malformed ESPN final box for event {event} on {date}: {exc}")
+            continue
         game_rows=[]
         for side in boxes:
-            team=_abbr(side['team']['abbreviation']);home=team==game['homeTeam']['teamTricode']
-            opponent=game['awayTeam' if home else 'homeTeam']['teamTricode']
-            block=side.get('statistics',[{}])[0];athletes=block.get('athletes',[])
-            if len(athletes)<5:raise ValueError('Incomplete final player list')
-            for p in athletes:
-                person=p.get('athlete',{});stats=dict(zip(block.get('labels',[]),p.get('stats',[])))
-                dnp=bool(p.get('didNotPlay'))
-                row={'PLAYER_NAME':person.get('displayName',''),'ESPN_PLAYER_ID':str(person.get('id','')),
-                     'GAME_ID':'ESPN:'+event,'ESPN_EVENT_ID':event,'TEAM_ABBREVIATION':team,'GAME_DATE':date,
-                     'MATCHUP':f'{team} vs. {opponent}' if home else f'{team} @ {opponent}',
-                     'GAME_OPP':opponent,'FINAL':True,'DNP':dnp,'SOURCE':'ESPN final box','WL':''}
-                for dest,label in {'MIN':'MIN','PTS':'PTS','REB':'REB','AST':'AST','STL':'STL','BLK':'BLK','TOV':'TO'}.items():
-                    value=stats.get(label)
-                    try:row[dest]=float(value)
-                    except (TypeError,ValueError):row[dest]=None
-                for label,made,attempt in [('FG','FGM','FGA'),('3PT','FG3M','FG3A'),('FT','FTM','FTA')]:
-                    pieces=str(stats.get(label,'')).split('-')
-                    try:row[made],row[attempt]=map(float,pieces)
-                    except (ValueError,TypeError):row[made]=row[attempt]=None
-                if not dnp and any(row.get(k) is None for k in ('MIN','PTS','REB','AST','STL','BLK','TOV','FG3M')):
-                    raise ValueError('Final box contains incomplete played statistics')
-                game_rows.append(row)
+            try:
+                team=_abbr(side['team']['abbreviation']);home=team==game['homeTeam']['teamTricode']
+                opponent=game['awayTeam' if home else 'homeTeam']['teamTricode']
+                block=side.get('statistics',[{}])[0];athletes=block.get('athletes',[])
+                if len(athletes)<5:
+                    raise ValueError('Incomplete final player list')
+                for p in athletes:
+                    person=p.get('athlete',{});stats=dict(zip(block.get('labels',[]),p.get('stats',[])))
+                    dnp=bool(p.get('didNotPlay'))
+                    row={'PLAYER_NAME':person.get('displayName',''),'ESPN_PLAYER_ID':str(person.get('id','')),
+                         'GAME_ID':'ESPN:'+event,'ESPN_EVENT_ID':event,'TEAM_ABBREVIATION':team,'GAME_DATE':date,
+                         'MATCHUP':f'{team} vs. {opponent}' if home else f'{team} @ {opponent}',
+                         'GAME_OPP':opponent,'FINAL':True,'DNP':dnp,'SOURCE':'ESPN final box','WL':''}
+                    for dest,label in {'MIN':'MIN','PTS':'PTS','REB':'REB','AST':'AST','STL':'STL','BLK':'BLK','TOV':'TO'}.items():
+                        value=stats.get(label)
+                        try:row[dest]=float(value)
+                        except (TypeError,ValueError):row[dest]=None
+                    for label,made,attempt in [('FG','FGM','FGA'),('3PT','FG3M','FG3A'),('FT','FTM','FTA')]:
+                        pieces=str(stats.get(label,'')).split('-')
+                        try:row[made],row[attempt]=map(float,pieces)
+                        except (ValueError,TypeError):row[made]=row[attempt]=None
+                    if not dnp:
+                        required=('MIN','PTS','REB','AST','STL','BLK','TOV','FG3M')
+                        missing=[k for k in required if row.get(k) is None]
+                        if missing:
+                            print(f"Skipping incomplete ESPN final-box row for {row.get('PLAYER_NAME')} on {date}; missing {missing}")
+                            continue
+                    game_rows.append(row)
+            except ValueError as exc:
+                print(f"Skipping malformed ESPN side for event {event} on {date}: {exc}")
+                continue
         output.extend(game_rows)
     return output
 
