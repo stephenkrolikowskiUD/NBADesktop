@@ -1429,7 +1429,7 @@ function loadAllData(){
     const tonightNames=new Set(st.tonight.map(p=>normalizePlayerName(p.PLAYER_NAME)).filter(Boolean));
     const latestDate=today;
     resetDerived();
-    const datePicks=cleanPicks.filter(p=>p.__normDate===today&&tonightNames.has(normalizePlayerName(p.__pickPlayer))).sort((a,b)=>toNum(a.rank)-toNum(b.rank));
+    const datePicks=cleanPicks.filter(p=>p.RUN_ID===run&&p.__normDate===today&&tonightNames.has(normalizePlayerName(p.__pickPlayer))).sort((a,b)=>toNum(a.rank)-toNum(b.rank));
     const seen=new Set();
     st.aiPicks=datePicks.filter(p=>{
       const key=[normalizePlayerName(p.__pickPlayer),p.prop_type,p.lean,p.line].join('|');

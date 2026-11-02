@@ -11,6 +11,20 @@ from nba_readiness import slate_market_events
 TEAMS={'Boston Celtics':'BOS','Detroit Pistons':'DET','Philadelphia 76ers':'PHI','New York Knicks':'NYK','Oklahoma City Thunder':'OKC','San Antonio Spurs':'SAS'}
 
 class OfficialPDFTests(unittest.TestCase):
+    def test_index_discovers_actual_report_and_rejects_foreign_or_future_links(self):
+        now=datetime(2026,10,19,20,35,tzinfo=timezone.utc)
+        good='https://ak-static.cms.nba.com/referee/injury/Injury-Report_2026-10-19_04_30PM.pdf'
+        html=f'<a href="{good}">report</a><a href="{good.replace("ak-static.cms.nba.com","evil.example")}">bad</a><a href="{good.replace("04_30PM","05_00PM")}">future</a>'
+        self.assertEqual(nba_injuries.official_report_links(html,'https://official.nba.com/',now),[good])
+        class HTTP:
+            def index(self,url):return html
+            def get(self,url):
+                if url!=good:raise AssertionError('Did not prefer published link')
+                return (ROOT/'tests/fixtures/nba-injury-2026-10-19-1630.pdf').read_bytes()
+        report=nba_injuries.fetch_official_report(HTTP(),'2026-10-20',TEAMS,now)
+        self.assertTrue(report['official'])
+        self.assertEqual(report['submitted_teams'],['BOS'])
+
     def report(self,date='2026-10-20'):
         return nba_injuries.report_from_pdf((ROOT/'tests/fixtures/nba-injury-2026-10-19-1630.pdf').read_bytes(),date,TEAMS,'NBA official fixture')
     def test_real_pdf_timestamp_rows_and_submission_states(self):

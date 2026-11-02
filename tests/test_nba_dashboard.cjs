@@ -91,7 +91,8 @@ function seed(status='READY'){
   fixtures.NBA_Status[0].UPDATED_AT_UTC=new Date(Date.now()-5*3600000).toISOString();
   fixtures.Tonights_Opponent[0].ANALYSIS_SEASON='2025-26';
   fixtures.Tonights_Opponent[0].COMMENCE_TIME=new Date(Date.now()+3600000).toISOString();
-  fixtures.Daily_Picks=[{DATE:today,player:player.PLAYER_NAME,prop_type:'PTS',line:20.5,lean:'OVER'}];
+  fixtures.Daily_Picks=[{DATE:today,RUN_ID:'research-run',player:player.PLAYER_NAME,prop_type:'PTS',line:20.5,lean:'OVER'},
+    {DATE:today,RUN_ID:'older-run',player:player.PLAYER_NAME,prop_type:'REB',line:5.5,lean:'OVER'}];
   for(const rows of [fixtures.Tonights_Opponent,fixtures.Dashboard_Player_Stats,fixtures.DK_Player_Props])for(const row of rows)row.RUN_ID='research-run';
   await api.loadAllData();
   assert.equal(api.getState().tonight.length,1);assert.equal(api.getState().props.length,1);

@@ -3,6 +3,8 @@ from datetime import datetime,timedelta
 from zoneinfo import ZoneInfo
 import csv,io,re,unicodedata
 import requests
+from html.parser import HTMLParser
+from urllib.parse import urljoin, urlparse
 EASTERN=ZoneInfo('America/New_York')
 def iso_time(value):
     try:
@@ -17,9 +19,15 @@ def norm(value):
     return re.sub(r'[^a-z0-9]+',' ',text).strip()
 class FeedError(RuntimeError):pass
 class ReportHTTP:
+    def index(self,url):
+        try:
+            response=requests.get(url,timeout=10,headers={'User-Agent':'NBA-Dashboard/1.0','Accept':'text/html'})
+            response.raise_for_status()
+            return response.text
+        except requests.RequestException as exc:raise FeedError('Official report index unavailable') from exc
     def get(self,url):
         try:
-            response=requests.get(url,timeout=10)
+            response=requests.get(url,timeout=10,headers={'User-Agent':'NBA-Dashboard/1.0','Accept':'application/pdf'})
             if response.status_code!=200:raise FeedError(f'Official report unavailable (HTTP {response.status_code})')
             if not response.content.startswith(b'%PDF'):raise FeedError('Official report was not a PDF')
             return response.content
@@ -120,15 +128,44 @@ def report_from_pdf(data,date,team_names,url):
     return report
 
 
+def official_report_links(html,base,now):
+    class Links(HTMLParser):
+        def __init__(self):super().__init__();self.urls=[]
+        def handle_starttag(self,tag,attrs):
+            if tag=='a':self.urls.extend(v for k,v in attrs if k=='href' and v)
+    links=Links();links.feed(html);found=[]
+    for href in links.urls:
+        url=urljoin(base,href);parts=urlparse(url)
+        if parts.scheme!='https' or parts.hostname!='ak-static.cms.nba.com':continue
+        match=re.fullmatch(r'/referee/injury/Injury-Report_(\d{4}-\d{2}-\d{2}_\d{2}_\d{2}[AP]M)\.pdf',parts.path)
+        if not match:continue
+        try:stamp=datetime.strptime(match[1],'%Y-%m-%d_%I_%M%p').replace(tzinfo=EASTERN)
+        except ValueError:continue
+        if 0<=(now-stamp).total_seconds()<=6*3600:found.append((stamp,url))
+    return list(dict.fromkeys(url for _,url in sorted(found,reverse=True)))
+
+
 def fetch_official_report(http,date,teams,now):
     # Official report filenames are quarter-hour Eastern timestamps. Try only a bounded window.
     eastern=now.astimezone(EASTERN)
     rounded=eastern.replace(minute=eastern.minute//15*15,second=0,microsecond=0)
-    errors=[]
+    errors=[];urls=[]
+    year=eastern.year if eastern.month>=7 else eastern.year-1
+    index=f'https://official.nba.com/nba-injury-report-{year}-{str(year+1)[-2:]}-season/'
+    if hasattr(http,'index'):
+        try:urls=official_report_links(http.index(index),index,now)[:8]
+        except FeedError as exc:errors.append({'url':index,'error':'FeedError','detail':str(exc)})
     for minutes in (0,15,30,45,60,90,120):
         stamp=rounded-timedelta(minutes=minutes)
         url='https://ak-static.cms.nba.com/referee/injury/Injury-Report_'+stamp.strftime('%Y-%m-%d_%I_%M%p')+'.pdf'
-        try:return report_from_pdf(http.get(url),date,teams,url)
+        urls.append(url)
+    for url in dict.fromkeys(urls):
+        try:
+            report=report_from_pdf(http.get(url),date,teams,url)
+            stamp=iso_time(report.get('reported_at'))
+            if not stamp or not 0<=(now-stamp).total_seconds()<=6*3600:
+                raise ValueError('Report content timestamp stale or future')
+            return report
         except (FeedError,ValueError) as exc:errors.append({'url':url,'error':type(exc).__name__,'detail':str(exc)})
     return {'source':'NBA official report unavailable','slate_date':date,'reported_at':'',
             'official':False,'players':[],'submitted_teams':[],'errors':errors}

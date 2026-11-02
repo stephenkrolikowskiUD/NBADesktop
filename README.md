@@ -121,3 +121,17 @@ Assists (AST) are eligible for AI selection alongside other supplied metrics. Th
 October 24 reliability follow-up: the ESPN history refresh reports and skips malformed records while retaining verified seed rows, and retries a seven-day correction window. The grader's final-box reader remains strict by default. Scheduled runners explicitly use ESPN for seeded game logs. All 30 roster IDs are checked against ESPN's team identities.
 
 Early-season analysis uses an unmixed prior season until five current-season games are available; current-only players retain their actual limited sample. Hit-rate cells show the source season and sample size. Existing prior-season edge discounts and market/injury validation remain in effect. Gemini HTTP 402 prepaid-credit failures stop additional model passes and appear explicitly in NBA_Status and the AI Picks empty state. Adding credits to the configured Google AI Studio project is an account action the user must complete; code changes cannot clear that billing block.
+# October 30 Injury Feed Repair
+
+- Official injury fetching now prefers report links published on the current
+  season's NBA index, then uses the existing bounded filename fallback. Only
+  approved NBA PDF URLs and reports within six hours are accepted. Player
+  availability remains unknown when official access fails.
+- The official index returned HTTP 403 during local diagnosis. Discovery and
+  parser regressions pass, but live recovery is NOT verified; this code cannot
+  guarantee restoration of an upstream denied request. The existing explicit
+  injury CSV input remains available for a verified dated report.
+- Dashboard picks must match the current publication RUN_ID. Failed generation
+  cannot reuse earlier same-day picks. Daily_Picks remains append-only history.
+- Removed the hardcoded May 4 snapshot label; the summary now identifies the
+  actual target slate and run. No live engine or Sheets writes during repair.

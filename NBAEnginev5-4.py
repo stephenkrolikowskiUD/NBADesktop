@@ -26,7 +26,6 @@ from nba_readiness import season_for_date, event_is_on_date, validate_market_pic
 print("Authenticating with Google...")
 SHEET_NAME = 'NBA_Dashboard_Data'
 SHEET_ID = os.environ.get('NBA_SHEET_ID') or '12gBgVx_RCsIytjZHjfZWgLtG-R-zcPbYYE-CVFd4EDw'
-SNAPSHOT_DATE = "2026-05-04"
 SPORT_LABEL = "NBA"
 ENABLE_FANDUEL_FALLBACK = os.getenv("ENABLE_FANDUEL_FALLBACK", "false").lower() == "true"
 _last_odds_credits_remaining = None
@@ -2463,7 +2462,7 @@ print("🏀 NBA ENGINE v8.5 — RUN COMPLETE")
 print("=" * 60)
 print(f"📅 Date:             {today_str}")
 print(f"📆 Season:           {NBA_SEASON}")
-print(f"🗂️  Snapshot:         {SNAPSHOT_DATE}")
+print(f"🗂️  Slate snapshot:   {today_str} · run {RUN_ID}")
 print(f"🏟️  Games tonight:    {len(games_list)}")
 print(f"🏀 Active players:    {len(df_player_final['PLAYER_NAME'].unique())}")
 if not df_props.empty:

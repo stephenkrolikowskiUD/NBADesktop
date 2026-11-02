@@ -2,7 +2,9 @@ name: NBA Engine
 
 on:
   schedule:
-    - cron: '0 10,18,21 * * *'
+    - cron: '0 10 * * *'
+      timezone: America/New_York
+    - cron: '0 18,21 * * *'
       timezone: America/New_York
   workflow_dispatch:
     inputs:
