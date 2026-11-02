@@ -135,3 +135,21 @@ Early-season analysis uses an unmixed prior season until five current-season gam
   cannot reuse earlier same-day picks. Daily_Picks remains append-only history.
 - Removed the hardcoded May 4 snapshot label; the summary now identifies the
   actual target slate and run. No live engine or Sheets writes during repair.
+
+### November 2 selection audit repair
+
+- Removed UNDER-only quotas and LEAN rejection. Gemini receives both sides'
+  estimated returns; PRA is checked against the selected side, not OVER edge.
+- Historical non-push rates are shrunk toward the two-sided no-vig market
+  probability using 20 prior observations. Prior-season/returning reliability
+  reduces effective historical weight, not just the displayed edge.
+- Exact-market-validated candidates must have positive side edge and estimated
+  return of at least 5% (8% for PRA). These are explicit provisional policy
+  settings, not backtest-validated thresholds or guaranteed profits.
+- No confidence promotion from repeated Gemini answers. New qualified picks
+  remain LEAN until higher confidence is supported by prospective evidence.
+- Rows record MODEL_POLICY=nba-symmetric-market-prior-v1, MODEL_PROBABILITY,
+  MODEL_EV_PCT and MODEL_GAMES. Existing historical grades are unchanged.
+- Gemini still nominates candidates; this repair does not establish exhaustive
+  market coverage or calibrated predictive accuracy. Live deployment and an
+  engine run are required before the board changes.

@@ -208,6 +208,60 @@ def non_push_rate(values,line):
     return over/(over+under) if over+under else None
 
 
+def side_estimates(values, line, over_odds, under_odds, reliability=1.0):
+    """Market-anchored estimates, not empirically validated probabilities.
+
+    Twenty market-prior observations temper small samples; pushes contribute
+    zero profit and are excluded from the conditional win probability.
+    """
+    over = finite_odds_probability(over_odds)
+    under = finite_odds_probability(under_odds)
+    if over is None or under is None:
+        return {}
+    usable = []
+    for value in values:
+        try:
+            value = float(value)
+            if math.isfinite(value):
+                usable.append(value)
+        except (ValueError, TypeError):
+            pass
+    wins = sum(v > line for v in usable)
+    losses = sum(v < line for v in usable)
+    n = wins + losses
+    if n < 5:
+        return {}
+    weight = min(1.0, max(0.0, float(reliability)))
+    prior = over / (over + under)
+    probability = (wins * weight + 20 * prior) / (n * weight + 20)
+    result = {}
+    for side, p, odds, implied in [('OVER', probability, over_odds, over),
+                                   ('UNDER', 1 - probability, under_odds, under)]:
+        odds = float(odds)
+        payout = 100 / abs(odds) if odds < 0 else odds / 100
+        result[side] = {'probability': p, 'edge': 100 * (p - implied),
+                        'ev': 100 * (n / len(usable)) * (p * payout - (1 - p)),
+                        'games': n}
+    return result
+
+
+def qualify_model_picks(picks, evidence, normalize_name):
+    """Apply identical side-aware gates after exact market validation."""
+    selected = []
+    for pick in picks:
+        key = (normalize_name(pick.get('player', '')), str(pick.get('prop_type', '')).upper(), float(pick['line']))
+        estimate = evidence.get(key, {}).get(pick.get('lean'))
+        floor = 8.0 if key[1] == 'PRA' else 5.0
+        if not estimate or estimate['ev'] < floor or estimate['edge'] <= 0:
+            continue
+        selected.append({**pick, 'confidence': 'LEAN',
+                         'MODEL_PROBABILITY': estimate['probability'],
+                         'MODEL_EV_PCT': estimate['ev'],
+                         'MODEL_POLICY': 'nba-symmetric-market-prior-v1',
+                         'MODEL_GAMES': estimate['games']})
+    return sorted(selected, key=lambda row: row['MODEL_EV_PCT'], reverse=True)
+
+
 def box_metrics(row):
     """Fantasy and combination stats shared by the final-box grading path."""
     result=dict(row)

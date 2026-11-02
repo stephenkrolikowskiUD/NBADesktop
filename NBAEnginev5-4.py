@@ -20,6 +20,7 @@ from nba_api.stats.static import teams
 from run_logger import RunLogger
 import nba_sources
 import nba_injuries
+from nba_readiness import side_estimates, qualify_model_picks
 from nba_readiness import season_for_date, event_is_on_date, validate_market_picks, replace_sheet_values, select_analysis_history, finite_odds_probability, non_push_rate, selection_key, is_actionable_player, dashboard_stats, PERFORMANCE_POLICY, resolve_slate, slate_market_events, gemini_billing_exhausted
 
 # --- 1. AUTHENTICATION & SETUP ---
@@ -520,14 +521,7 @@ def parse_gemini_json_array(raw):
         raise
 
 def promote_consensus_confidence(confidence, consensus_count):
-    conf = normalize_confidence(confidence)
-    if consensus_count < 2:
-        return conf
-    if conf == 'LEAN':
-        return 'STRONG'
-    if conf == 'STRONG':
-        return 'SMASH'
-    return conf
+    return normalize_confidence(confidence)
 
 def build_consensus_pick_pool(pick_lists):
     grouped = {}
@@ -1580,6 +1574,7 @@ print("=" * 60)
 
 df_ev = pd.DataFrame()
 df_movers = pd.DataFrame()
+model_evidence = {}
 
 if not df_props.empty and len(df_logs) > 0:
     logs_by_player = {name: group.sort_values('GAME_DATE', ascending=False) for name, group in df_logs.groupby('PLAYER_NAME')}
@@ -1631,10 +1626,12 @@ if not df_props.empty and len(df_logs) > 0:
         baseline_info = history_metadata[history_metadata['PLAYER_NAME'] == player]
         is_prior_baseline = not baseline_info.empty and baseline_info.iloc[0]['BASELINE_TYPE'] == 'PRIOR_SEASON'
         edge_multiplier = 0.35 if is_prior_baseline else (0.5 if returning else 1.0)
-        if edge_over is not None:
-            edge_over = round(edge_over * edge_multiplier, 1)
-        if edge_under is not None:
-            edge_under = round(edge_under * edge_multiplier, 1)
+        estimates = side_estimates(p_logs[metric], dk_line, over_odds, under_odds, edge_multiplier)
+        if not estimates:
+            continue
+        model_evidence[(normalizePlayerName(player), metric.upper(), dk_line)] = estimates
+        edge_over = round(estimates['OVER']['edge'], 1)
+        edge_under = round(estimates['UNDER']['edge'], 1)
 
         ev_rows.append({
             'PLAYER_NAME': player, 'METRIC': metric, 'DK_LINE': dk_line, 'BOOK': prop.get('BOOK', 'draftkings'),
@@ -1652,9 +1649,9 @@ if not df_props.empty and len(df_logs) > 0:
             'UNDER_IMPLIED': round(under_impl, 3) if under_impl else None,
             'EDGE_OVER': edge_over, 'EDGE_UNDER': edge_under,
             'EDGE_MULTIPLIER': edge_multiplier,
-            'EV_OVER_$100': round(calc_dollar_ev(season_rate, over_odds) * (non_push / games_all) * edge_multiplier, 2) if calc_dollar_ev(season_rate, over_odds) is not None else None,
-            'EV_UNDER_$100': round(calc_dollar_ev(1 - season_rate, under_odds) * (non_push / games_all) * edge_multiplier, 2) if calc_dollar_ev(1 - season_rate, under_odds) is not None else None,
-            'BEST_BET': 'OVER' if (edge_over or 0) > 5 else ('UNDER' if (edge_under or 0) > 5 else ''),
+            'EV_OVER_$100': round(estimates['OVER']['ev'], 2),
+            'EV_UNDER_$100': round(estimates['UNDER']['ev'], 2),
+            'BEST_BET': max(estimates, key=lambda side: estimates[side]['ev']) if max(v['ev'] for v in estimates.values()) >= 5 else '',
             'LAST_UPDATED': timestamp_pst
         })
 
@@ -1941,12 +1938,13 @@ if GEMINI_API_KEY and len(games_list) > 0:
             ev_pool = ev_pool[ev_pool['PLAYER_NAME_NORM'].isin(active_name_map.keys())].copy()
             for name_norm, grp in ev_pool.groupby('PLAYER_NAME_NORM'):
                 sigs = []
-                for _, r in grp.sort_values('EDGE_OVER', ascending=False).head(3).iterrows():
+                signals = grp.assign(BEST_EV=grp[['EV_OVER_$100', 'EV_UNDER_$100']].max(axis=1))
+                for _, r in signals.sort_values('BEST_EV', ascending=False).head(3).iterrows():
                     hr = pd.to_numeric(r.get('HIT_RATE_SEASON'), errors='coerce')
                     edge = pd.to_numeric(r.get('EDGE_OVER'), errors='coerce')
                     if pd.isna(hr) or pd.isna(edge):
                         continue
-                    sigs.append(f"{r.get('METRIC')} {r.get('DK_LINE')} HR={hr*100:.0f}% EV={edge:.0f}%")
+                    sigs.append(f"{r.get('METRIC')} {r.get('DK_LINE')} historical OVER rate={hr*100:.0f}% (not a forecast); estimated return OVER={r.get('EV_OVER_$100')}% UNDER={r.get('EV_UNDER_$100')}%")
                 if sigs:
                     player_ev_map[name_norm] = '; '.join(sigs)
             for (name_norm, metric_norm), grp in ev_pool.groupby(['PLAYER_NAME_NORM', 'METRIC_NORM']):
@@ -2024,7 +2022,7 @@ ACTIVE PROP STREAKS:
 RULES:
 - CRITICAL: ONLY pick players from the PLAYER DATA list above. Do NOT include any player not in the list.
 - Return up to 10 ranked picks as a JSON array. Do not force picks when evidence is insufficient.
-- Confidence tiers: SMASH (top 3 highest conviction only), STRONG (next 3-4), LEAN (rest)
+- Use LEAN for all picks; confidence is not validated by language-model conviction.
 - Players flagged RETURNING have depressed lines due to injury/absence. Their season averages are NOT reliable short-term predictors. Treat with extreme caution — do NOT SMASH these players.
 - Players flagged B2B are on the second night of a back-to-back. Deprioritize them unless the edge is exceptional.
 - STAR players are the top 20 by season UD fantasy points in tonight's valid prop pool.
@@ -2036,21 +2034,19 @@ RULES:
 - STRONG should require multiple confirming signals: positive EV, strong hit rate, and supportive matchup/split context. If only one signal is strong, use LEAN instead.
 - Select only supplied live market lines. Skip any player/metric without a quoted line.
 - Favor cleaner one-stat edges over forcing combo props unless the combo edge is clearly stronger.
-- Be much more selective on UNDER picks. Only use UNDER when the edge is clearly stronger than the comparable OVER case and the player context supports downside.
-- Cap UNDER picks at 2 per slate. Avoid LEAN UNDER picks entirely.
+- Evaluate OVER and UNDER equally using their own quoted prices and estimated returns. Do not force a side balance.
 - Never substitute a statistical average for a market line. Return fewer picks if markets are insufficient.
 - Use the listed best prop signals when present: higher EV% and higher hit rate should drive conviction.
 
 ANALYSIS FACTORS:
-- Active prop streaks (3+ games on a prop = strong lean to continue)
-- Hit rate: players hitting a prop 80%+ over L10 = high reliability
+- Streaks and historical hit rates describe past games, not validated predictive reliability.
 - EV% matters: props with strong positive EV% vs the book deserve more weight
 - Opponent DEF_RTG: high DEF_RTG = weak defense = good for overs
 - PACE factor: high pace games produce more stats
 - High game totals (O/U 230+) favor offensive props
 - Home/away splits matter — compare tonight's location to the player's split before making a pick
 - L5 trend vs season average: rising L5 = hot player, falling L5 = cold player
-- BLOWOUT RISK: Games with spreads of 12+ points — FAVOR props for players on the favored team (more blowout production). AVOID props for players on the underdog (starters may sit early if down big).
+- Blowouts can reduce starter minutes on either team; do not assume automatic upside for favorites.
 
 For each pick provide:
 - rank (1-10)
@@ -2121,19 +2117,6 @@ IMPORTANT: Return ONLY the JSON array. No markdown, no preamble."""
                 if prop_type == 'PRA' and player_norm in players_with_pr:
                     dropped_prop_caps.append(f"{row.get('player', '?')} PRA — PR preferred for same player")
                     continue
-                if prop_type == 'PRA':
-                    ev_meta = metric_ev_map.get((player_norm, 'PRA'), {})
-                    ev_edge = pd.to_numeric(ev_meta.get('edge'), errors='coerce')
-                    if pd.isna(ev_edge) or float(ev_edge) < 8:
-                        dropped_prop_caps.append(f"{row.get('player', '?')} PRA — edge below threshold")
-                        continue
-                if lean in {'UNDER', 'FADE'}:
-                    if conf == 'LEAN':
-                        dropped_prop_caps.append(f"{row.get('player', '?')} {prop_type} UNDER — lean under removed")
-                        continue
-                    if under_count >= 2:
-                        dropped_prop_caps.append(f"{row.get('player', '?')} {prop_type} UNDER — under cap")
-                        continue
                 if prop_type_counts.get(prop_type, 0) >= 3:
                     dropped_prop_caps.append(f"{row.get('player', '?')} {prop_type} — per-type cap")
                     continue
@@ -2175,6 +2158,10 @@ IMPORTANT: Return ONLY the JSON array. No markdown, no preamble."""
         print(f" - picks after post-filter: {len(df_picks)}")
         df_picks = pd.DataFrame(validate_market_picks(
             df_picks.to_dict('records'), df_props.to_dict('records'), normalizePlayerName))
+        df_picks = pd.DataFrame(qualify_model_picks(
+            df_picks.to_dict('records'), model_evidence, normalizePlayerName))
+        if not df_picks.empty:
+            df_picks['rank'] = range(1, len(df_picks) + 1)
         if not df_picks.empty:
             starts = pd.to_datetime(df_picks['COMMENCE_TIME'], utc=True, errors='coerce')
             df_picks = df_picks[starts.notna() & (starts > pd.Timestamp.now(tz='UTC'))].copy()
@@ -2241,6 +2228,7 @@ IMPORTANT: Return ONLY the JSON array. No markdown, no preamble."""
                      'CONSENSUS_COUNT', 'CONSENSUS_RUNS', 'CONSENSUS_TAG',
                      'CLV_OPEN_LINE', 'CLV_LATEST_LINE', 'CLV_DELTA', 'CLV_LAST_UPDATE',
                      'RESULT', 'ACTUAL_STAT', 'HIT', 'LAST_UPDATED']
+        col_order += ['MODEL_PROBABILITY', 'MODEL_EV_PCT', 'MODEL_POLICY', 'MODEL_GAMES']
         df_picks = df_picks[[c for c in col_order if c in df_picks.columns]]
         if not df_picks.empty:
             df_picks = df_picks.reset_index(drop=True)

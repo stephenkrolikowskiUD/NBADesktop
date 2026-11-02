@@ -124,12 +124,14 @@ class GraderTests(unittest.TestCase):
 
 
 class EngineTests(unittest.TestCase):
-    def run_engine(self, *, games=True, current_logs=True, logs_fail=False, ai=False, bad_line=False, slate_offset=0, public_source=False, prop_type="PTS", ai_error=None):
+    def run_engine(self, *, games=True, current_logs=True, logs_fail=False, ai=False, bad_line=False, slate_offset=0, public_source=False, prop_type="PTS", ai_error=None, thin_history=False):
         today=datetime.now(ZoneInfo('America/New_York')).date().isoformat()
         target=(datetime.fromisoformat(today)+timedelta(days=slate_offset)).date().isoformat()
         season=season_for_date(today)
         prior=f'{int(season[:4])-1}-12-01'
         seed=pd.DataFrame([log_row(prior, points=99)])
+        if ai and not thin_history:
+            seed=pd.DataFrame([log_row((datetime.fromisoformat(prior)-timedelta(days=i)).date().isoformat(), points=25) for i in range(20)])
         fresh=pd.DataFrame([log_row(today, points=12)]) if current_logs else seed.iloc[:0].copy()
         book=Workbook(seed)
         roster=pd.DataFrame([{'DISPLAY_FIRST_LAST':'Example Player','TEAM_ABBREVIATION':'LAL'}])
@@ -222,6 +224,13 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(picks[0]['team'],'LAL')
         self.assertEqual(picks[0]['opponent'],'NYK')
         self.assertEqual(picks[0]['BOOK'],'draftkings')
+        self.assertEqual(picks[0]['MODEL_POLICY'],'nba-symmetric-market-prior-v1')
+        self.assertGreaterEqual(picks[0]['MODEL_EV_PCT'],5)
+        self.assertEqual(picks[0]['confidence'],'LEAN')
+
+    def test_ai_pick_with_thin_history_is_not_published(self):
+        book,_=self.run_engine(ai=True,thin_history=True)
+        self.assertNotIn('Daily_Picks',book.tabs)
     def test_assist_pick_publishes_with_valid_market(self):
         book,_=self.run_engine(ai=True,prop_type='AST')
         picks=book.tabs['Daily_Picks'].get_all_records()
