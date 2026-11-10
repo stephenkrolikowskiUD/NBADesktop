@@ -211,6 +211,13 @@ Early-season analysis uses an unmixed prior season until five current-season gam
   Validation uses mocked APIs and Sheets only; production history has not been
   rewritten. Push, then run the engine and grader to apply the repairs live.
 
+### Static Pages deployment (2026-11-10)
+
+The root `.nojekyll` file disables Jekyll processing for this plain HTML/JS
+dashboard. Keep it tracked: documentation contains GitHub Actions expressions
+that Liquid otherwise interprets as invalid template syntax. This change needs
+a Pages deployment, not an engine or grader run.
+
 ### Pregame props and diagnostic safety (2026-11-10)
 
 - Paid player-props requests exclude started games and unknown/invalid start
