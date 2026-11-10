@@ -85,6 +85,21 @@ def log_row(date, team='BOS', points=10):
 
 
 class SafetyTests(unittest.TestCase):
+    def test_quota_abort_marks_publication_failed_and_exits_nonzero(self):
+        tree=ast.parse((ROOT/'NBAEnginev5-4.py').read_text())
+        fn=next(n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name=='check_quota_or_abort')
+        logger=Mock()
+        publish=Mock()
+        warnings=[]
+        namespace={'sys':sys,'runlog':logger,'publish_status':publish,
+                   'PUBLICATION_WARNINGS':warnings,'QUOTA_FLOOR_THIS_SPORT':100,'SPORT_LABEL':'NBA'}
+        exec(compile(ast.Module(body=[fn],type_ignores=[]),'quota-test','exec'),namespace)
+        with self.assertRaises(SystemExit) as caught:
+            namespace['check_quota_or_abort'](SimpleNamespace(headers={'x-requests-remaining':'10'}),'fixture')
+        self.assertEqual(caught.exception.code,2)
+        publish.assert_called_once_with('FAILED')
+        logger.fail.assert_called_once()
+        self.assertIn('credit guard',warnings[0])
     def test_season_boundaries(self):
         self.assertEqual(season_for_date('2026-10-20'), '2026-27')
         self.assertEqual(season_for_date('2026-04-20'), '2025-26')
@@ -124,7 +139,7 @@ class GraderTests(unittest.TestCase):
 
 
 class EngineTests(unittest.TestCase):
-    def run_engine(self, *, games=True, current_logs=True, logs_fail=False, ai=False, bad_line=False, slate_offset=0, public_source=False, prop_type="PTS", ai_error=None, thin_history=False):
+    def run_engine(self, *, games=True, current_logs=True, logs_fail=False, ai=False, bad_line=False, slate_offset=0, public_source=False, prop_type="PTS", ai_error=None, thin_history=False, existing_book=None):
         today=datetime.now(ZoneInfo('America/New_York')).date().isoformat()
         target=(datetime.fromisoformat(today)+timedelta(days=slate_offset)).date().isoformat()
         season=season_for_date(today)
@@ -133,7 +148,7 @@ class EngineTests(unittest.TestCase):
         if ai and not thin_history:
             seed=pd.DataFrame([log_row((datetime.fromisoformat(prior)-timedelta(days=i)).date().isoformat(), points=25) for i in range(20)])
         fresh=pd.DataFrame([log_row(today, points=12)]) if current_logs else seed.iloc[:0].copy()
-        book=Workbook(seed)
+        book=existing_book if existing_book is not None else Workbook(seed)
         roster=pd.DataFrame([{'DISPLAY_FIRST_LAST':'Example Player','TEAM_ABBREVIATION':'LAL'}])
         market_line=2.5 if prop_type=='AST' else 10.5
         event={'id':'today','commence_time':target+'T23:59:59-04:00','home_team':'Los Angeles Lakers','away_team':'New York Knicks'}
@@ -231,6 +246,35 @@ class EngineTests(unittest.TestCase):
     def test_ai_pick_with_thin_history_is_not_published(self):
         book,_=self.run_engine(ai=True,thin_history=True)
         self.assertNotIn('Daily_Picks',book.tabs)
+
+    def test_repeated_pick_is_published_for_latest_run_without_rewriting_history(self):
+        book,_=self.run_engine(ai=True)
+        original=dict(book.tabs['Daily_Picks'].get_all_records()[0])
+        book,_=self.run_engine(ai=True,existing_book=book)
+        rows=book.tabs['Daily_Picks'].get_all_records()
+        status=book.tabs['NBA_Status'].get_all_records()[0]
+        self.assertEqual(len(rows),2)
+        self.assertEqual(rows[0]['RUN_ID'],original['RUN_ID'])
+        self.assertEqual(rows[0]['PUBLISHED_AT_UTC'],original['PUBLISHED_AT_UTC'])
+        self.assertEqual(rows[0]['ODDS'],original['ODDS'])
+        self.assertEqual(rows[1]['RUN_ID'],status['RUN_ID'])
+        self.assertNotEqual(rows[1]['RUN_ID'],original['RUN_ID'])
+        self.assertEqual(rows[1]['RUN_NUMBER'],2)
+
+    def test_invalid_repeat_does_not_reappear_in_latest_publication(self):
+        book,_=self.run_engine(ai=True)
+        book,_=self.run_engine(ai=True,bad_line=True,existing_book=book)
+        status=book.tabs['NBA_Status'].get_all_records()[0]
+        self.assertEqual(status['STATUS'],'DEGRADED')
+        self.assertFalse(any(row['RUN_ID']==status['RUN_ID']
+                             for row in book.tabs['Daily_Picks'].get_all_records()))
+
+    def test_silent_pick_append_failure_cannot_publish_ready(self):
+        book,_=self.run_engine(ai=True)
+        with patch.object(book.tabs['Daily_Picks'],'append_rows',return_value=None):
+            with self.assertRaisesRegex(RuntimeError,'publication verification failed'):
+                self.run_engine(ai=True,existing_book=book)
+        self.assertEqual(book.tabs['NBA_Status'].get_all_records()[0]['STATUS'],'FAILED')
     def test_assist_pick_publishes_with_valid_market(self):
         book,_=self.run_engine(ai=True,prop_type='AST')
         picks=book.tabs['Daily_Picks'].get_all_records()

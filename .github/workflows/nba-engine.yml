@@ -4,7 +4,9 @@ on:
   schedule:
     - cron: '0 10 * * *'
       timezone: America/New_York
-    - cron: '0 18,21 * * *'
+    - cron: '0 18 * * *'
+      timezone: America/New_York
+    - cron: '0 21 * * *'
       timezone: America/New_York
   workflow_dispatch:
     inputs:
@@ -39,6 +41,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Log trigger
+        env:
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+        run: python nba_schedule.py
 
       - name: Install dependencies
         run: |

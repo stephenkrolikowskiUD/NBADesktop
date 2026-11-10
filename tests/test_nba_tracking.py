@@ -53,8 +53,10 @@ class TrackingTests(unittest.TestCase):
                    'performance_eligibility':performance_eligibility,'selection_key':selection_key,'PICK_PERF_WILSON_Z':1.96,'PICK_PERF_MIN_SAMPLE':25,'timestamp_est':''}
         exec(compile(ast.Module(body=[node for node in tree.body if isinstance(node,ast.FunctionDef) and node.name in wanted],type_ignores=[]),'grader-test','exec'),namespace)
         good=self.market();loss=self.market(player='Loss',HIT='NO',ODDS=-200);push=self.market(player='Push',HIT='PUSH')
-        prepared=namespace['pick_perf_prepare_df'](pd.DataFrame([good,good,loss,push,self.market(DATE='2026-04-20')]))
+        repeated={**good,'RUN_ID':'later-run','ODDS':-110,'PUBLISHED_AT_UTC':'2026-10-20T21:00:00Z'}
+        prepared=namespace['pick_perf_prepare_df'](pd.DataFrame([good,repeated,loss,push,self.market(DATE='2026-04-20')]))
         self.assertEqual(len(prepared),3)
+        self.assertEqual(prepared.iloc[0]['ODDS'],150)
         stats=namespace['pick_perf_metrics_row'](prepared,'overall','','all_time')
         self.assertEqual(stats['N_PICKS_DECISIVE'],2);self.assertEqual(stats['HIT_RATE'],.5)
         self.assertAlmostEqual(stats['ROI_PER_PICK'],100*.5/3,places=3)

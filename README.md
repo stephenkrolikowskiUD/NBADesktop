@@ -114,7 +114,20 @@ Team logos are served locally from `assets/team-logos/`, sourced from the offici
 
 ESPN roster fallback uses verified numeric team IDs for all 30 teams, avoiding NBA/ESPN abbreviation differences such as NOP/NO. Returned roster team identity is still checked. Uncaught engine errors publish `FAILED` when possible and record `CRASH` in Run_Log; the original traceback and failing process exit remain visible.
 
-GitHub schedules use `timezone: America/New_York`, following Eastern daylight-saving changes. The 2 a.m. grader advances to the next valid time on spring-forward day. Scheduled engine runs target `today`; manual runs retain the `slate_date` input and default `next`. Schedules become active after these workflows are pushed to the default branch. GitHub may start scheduled runs later than their nominal trigger time.
+GitHub schedules use `timezone: America/New_York`, following Eastern daylight-saving changes. The 2 a.m. grader advances to the next valid time on spring-forward day. Scheduled engine runs target `today`; manual runs retain the `slate_date` input and default `next`. Schedules become active after these workflows are pushed to the default branch.
+
+### Scheduled run timing: actual behavior (checked November 7, 2026)
+
+GitHub `schedule` triggers are best-effort, and in this repo they arrive hours late. GitHub's docs say scheduled runs can be delayed under load (especially at the top of the hour) and can be dropped.
+
+- From October 23 to November 7, no scheduled engine run was created before 1:08 PM ET. The 10 AM engine run usually shows up between 1 and 4:30 PM, a few minutes after the grader's 10 AM run. Evening runs show up 2 to 5.5 hours late. Some days have fewer runs than scheduled.
+- The lateness happens before any runner is involved. The run record is created late, then jobs start about 2 seconds later and runs finish within about 8 minutes. Nothing waits on the `nba-sheet-writer` group for long.
+- It is not caused by `timezone:`. In May 2026 the crons were plain UTC (some at :15 and :45 past the hour) and were still 1 to 4 hours late.
+- Splitting the cron entries (November 2) did not change delivery. Each time now has its own entry only so that `github.event.schedule` tells us which slot fired.
+
+Each run starts with a **Log trigger** step (`nba_schedule.py`). It prints the event, cron, slot, slot date, minutes late, run ID, SHA, and requested slate to the log and the job summary. It reads no secrets and does not change the slate. A late 9 PM trigger that arrives after midnight is flagged `crossed_date=yes`. Because scheduled runs use `today`, that run processes the new day's slate, not the evening it was meant to refresh.
+
+A green run does not mean a fresh slate. Check `NBA_Status` and `Run_Log` too. If the dashboard must refresh at 10:00 sharp, an external trigger that calls `workflow_dispatch` is needed; GitHub's native cron cannot promise that. This is proposed and has not been set up.
 
 Assists (AST) are eligible for AI selection alongside other supplied metrics. They use the same quoted-market and availability validation and the existing three-picks-per-metric cap; there is no AST-wide blacklist.
 
@@ -153,3 +166,24 @@ Early-season analysis uses an unmixed prior season until five current-season gam
 - Gemini still nominates candidates; this repair does not establish exhaustive
   market coverage or calibrated predictive accuracy. Live deployment and an
   engine run are required before the board changes.
+
+### Publication correctness repair (2026-11-09)
+
+- Revalidated selections are published under each new run ID, even when the
+  same selection appeared earlier that day. Deduplication applies within a
+  publication, not across publications. Old rows and entry prices are retained;
+  the grader's existing selection-identity deduplication counts the first
+  eligible graded publication once, not each refresh as a separate bet.
+- This is not automatic carry-forward: a selection must pass the current run's
+  existing eligibility, exact-market, model and pre-tipoff checks again.
+- Before final status publication, the engine reads back Daily_Picks and checks
+  that the current run contains exactly the expected selection identities.
+  A mismatch publishes FAILED and exits with an error rather than reporting READY.
+- A credit-guard abort records the credit warning, publishes FAILED and exits
+  nonzero. Missing Gemini credentials produce a DEGRADED publication with a
+  reason instead of silently implying that pick generation succeeded.
+- Offline verification: 86 Python tests and the dashboard regression suite pass.
+  No live engine, paid API request, or Google Sheets write was used for testing.
+  Push these changes and run the engine to deploy; a second successful run should
+  retain any repeated qualifying picks under the latest NBA_Status RUN_ID.
+  These changes do not repair GitHub schedule delivery or alter model policy.

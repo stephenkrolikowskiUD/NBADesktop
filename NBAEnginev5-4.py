@@ -69,7 +69,13 @@ def check_quota_or_abort(resp, context: str) -> None:
             f"🛑 QUOTA GUARD: {remaining} remaining < {SPORT_LABEL} floor {floor} "
             f"({context}). Aborting run."
         )
-        sys.exit(0)
+        reason = f'Odds API credit guard: {remaining} credits remaining, below floor {floor}'
+        PUBLICATION_WARNINGS.append(reason)
+        runlog.fail(RuntimeError(reason))
+        try:
+            publish_status('FAILED')
+        finally:
+            sys.exit(2)
 
 
 def cached_odds_fetch(cache_key: str, fetch_fn):
@@ -1743,11 +1749,6 @@ print("=" * 60)
 
 df_picks = pd.DataFrame()
 existing_daily_picks = load_existing_daily_picks(sh, today_str)
-seen_pick_keys = set()
-if len(existing_daily_picks) > 0:
-    for _, row in existing_daily_picks.iterrows():
-        key = selection_key(row, normalizePlayerName)
-        seen_pick_keys.add(key)
 existing_run_numbers = pd.to_numeric(existing_daily_picks.get('RUN_NUMBER', pd.Series(dtype=float)), errors='coerce').dropna().astype(int)
 today_run_number = int(existing_run_numbers.max()) + 1 if not existing_run_numbers.empty else 1
 refresh_clv_daily_picks(sh, today_str, df_props, timestamp_pst)
@@ -2208,18 +2209,16 @@ IMPORTANT: Return ONLY the JSON array. No markdown, no preamble."""
             df_picks['CONSENSUS_RUNS'] = '1'
         if 'CONSENSUS_TAG' not in df_picks.columns:
             df_picks['CONSENSUS_TAG'] = ''
+        # Deduplicate within this publication, not against previous publications.
+        # Every row here has passed this run's market, model and tipoff gates.
         dedup_keep = []
-        duplicate_drop_msgs = []
+        seen_pick_keys = set()
         for _, row in df_picks.iterrows():
             pick_key = selection_key(row, normalizePlayerName)
             if pick_key in seen_pick_keys:
-                duplicate_drop_msgs.append(f"{row.get('player')} {row.get('prop_type')} {row.get('lean')} — duplicate prior run")
-                print(f"🔁 Skipping duplicate pick: {row.get('player')} {row.get('prop_type')} {row.get('lean')}")
                 continue
             seen_pick_keys.add(pick_key)
             dedup_keep.append(row.to_dict())
-        if duplicate_drop_msgs:
-            dropped_prop_caps.extend(duplicate_drop_msgs)
         df_picks = pd.DataFrame(dedup_keep)
 
         col_order = ['DATE', 'RUN_ID', 'RUN_NUMBER', 'RUN_TIME', 'SEASON', 'PERFORMANCE_POLICY', 'MARKET_VALIDATED', 'PUBLISHED_AT_UTC', 'BASELINE_TYPE', 'ANALYSIS_SEASON', 'CURRENT_GAMES', 'PRIOR_GAMES', 'rank', 'game', 'matchup', 'game_time', 'player', 'team',
@@ -2274,6 +2273,8 @@ IMPORTANT: Return ONLY the JSON array. No markdown, no preamble."""
 else:
     if not GEMINI_API_KEY:
         print("⚠️ No Gemini API key — skipping.")
+        PUBLICATION_WARNINGS.append('AI picks unavailable: Gemini API key missing')
+        runlog.warn('AI picks unavailable: Gemini API key missing')
     if len(games_list) == 0:
         print("⚠️ No games tonight — skipping.")
 
@@ -2375,10 +2376,11 @@ def append_upload(sheet_name, df):
 
         existing = ws.get_all_values()
         if existing:
-            existing_keys = {selection_key(dict(zip(existing[0], row)), normalizePlayerName) for row in existing[1:]}
+            existing_keys = {(str(record.get('RUN_ID', '')), selection_key(record, normalizePlayerName))
+                             for record in (dict(zip(existing[0], row)) for row in existing[1:])}
             kept=[]
             for row in df.to_dict('records'):
-                key=selection_key(row, normalizePlayerName)
+                key=(str(row.get('RUN_ID', '')), selection_key(row, normalizePlayerName))
                 if key in existing_keys:continue
                 existing_keys.add(key);kept.append(row)
             df=pd.DataFrame(kept, columns=df.columns)
@@ -2440,6 +2442,16 @@ if not df_picks.empty:
     except Exception:
         pass
     append_upload('Daily_Picks', df_picks)
+    # A successful API call alone does not prove that the board can load its picks.
+    published = sh.worksheet('Daily_Picks').get_all_records()
+    actual = [selection_key(row, normalizePlayerName) for row in published
+              if str(row.get('RUN_ID', '')) == RUN_ID]
+    expected = [selection_key(row, normalizePlayerName) for row in df_picks.to_dict('records')]
+    if len(actual) != len(expected) or set(actual) != set(expected):
+        error = RuntimeError('Daily_Picks publication verification failed')
+        runlog.fail(error)
+        publish_status('FAILED')
+        raise error
 else:
     print("⚠️ Skipping Daily_Picks — no picks.")
 
