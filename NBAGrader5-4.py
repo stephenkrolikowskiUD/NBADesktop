@@ -16,6 +16,7 @@ from google.auth import default
 from google.oauth2.service_account import Credentials
 from nba_api.stats.endpoints import leaguegamelog
 from run_logger import RunLogger
+from nba_security import safe_print as print
 import nba_sources
 from nba_readiness import box_metrics, backup_values, performance_eligibility, season_for_date, selection_key, replace_sheet_values, PERFORMANCE_POLICY
 

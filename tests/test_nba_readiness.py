@@ -139,7 +139,7 @@ class GraderTests(unittest.TestCase):
 
 
 class EngineTests(unittest.TestCase):
-    def run_engine(self, *, games=True, current_logs=True, logs_fail=False, ai=False, bad_line=False, slate_offset=0, public_source=False, prop_type="PTS", ai_error=None, thin_history=False, existing_book=None):
+    def run_engine(self, *, games=True, current_logs=True, logs_fail=False, ai=False, bad_line=False, slate_offset=0, public_source=False, prop_type="PTS", ai_error=None, thin_history=False, existing_book=None, props_failure=False, empty_props=False):
         today=datetime.now(ZoneInfo('America/New_York')).date().isoformat()
         target=(datetime.fromisoformat(today)+timedelta(days=slate_offset)).date().isoformat()
         season=season_for_date(today)
@@ -154,11 +154,14 @@ class EngineTests(unittest.TestCase):
         tipoff=datetime.fromisoformat(target+'T23:59:59').replace(tzinfo=ZoneInfo('America/New_York')).isoformat()
         event={'id':'today','commence_time':tipoff,'home_team':'Los Angeles Lakers','away_team':'New York Knicks'}
         def get(url, **kwargs):
-            if url.endswith('/events'): return Response([event] if games else [])
+            if url.endswith('/events'): return Response(([event,{**event,'id':'failed'}] if props_failure else [event]) if games else [])
             if url.endswith('/odds'):
+                if '/events/failed/' in url:
+                    import requests
+                    raise requests.Timeout('failed request?apiKey=private-fixture-key')
                 markets=[{'key':'player_assists' if prop_type=='AST' else 'player_points','outcomes':[
                     {'description':'Example Player','name':'Over','point':market_line,'price':-110},
-                    {'description':'Example Player','name':'Under','point':market_line,'price':-110}]}] if ai else []
+                    {'description':'Example Player','name':'Under','point':market_line,'price':-110}]}] if ai and not empty_props else []
                 return Response([] if '/events/' not in url else {'bookmakers':[{'key':'draftkings','markets':markets}]})
             raise AssertionError(f'Unexpected request {url}')
         nba_requests=[]
@@ -195,7 +198,7 @@ class EngineTests(unittest.TestCase):
             except SystemExit as exc:
                 if exc.code not in (0,None): raise
         if public_source:self.assertEqual(nba_requests,[])
-        if ai_error is not None:self.assertEqual(model.generate_content.call_count,1)
+        if ai_error is not None:self.assertEqual(model.generate_content.call_count,0 if empty_props else 1)
         return book, today
     def test_scheduled_refresh_trade_and_season_isolation(self):
         book,today=self.run_engine()
@@ -243,6 +246,19 @@ class EngineTests(unittest.TestCase):
         self.assertEqual(picks[0]['MODEL_POLICY'],'nba-symmetric-market-prior-v1')
         self.assertGreaterEqual(picks[0]['MODEL_EV_PCT'],5)
         self.assertEqual(picks[0]['confidence'],'LEAN')
+
+    def test_failed_game_keeps_successful_props_and_marks_degraded(self):
+        book,_=self.run_engine(ai=True,props_failure=True)
+        self.assertTrue(book.tabs['DK_Player_Props'].get_all_records())
+        self.assertTrue(book.tabs['Daily_Picks'].get_all_records())
+        status=book.tabs['NBA_Status'].get_all_records()[0]
+        self.assertEqual(status['STATUS'],'DEGRADED')
+        self.assertIn('Incomplete props coverage',status['WARNINGS'])
+        self.assertNotIn('private-fixture-key',status['WARNINGS'])
+
+    def test_no_props_never_calls_gemini(self):
+        book,_=self.run_engine(ai=True,empty_props=True,ai_error=AssertionError('Must not call Gemini'))
+        self.assertNotIn('Daily_Picks',book.tabs)
 
     def test_ai_pick_with_thin_history_is_not_published(self):
         book,_=self.run_engine(ai=True,thin_history=True)

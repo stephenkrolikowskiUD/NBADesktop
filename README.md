@@ -210,3 +210,21 @@ Early-season analysis uses an unmixed prior season until five current-season gam
 - These repairs do not change pick probabilities, thresholds, or scheduling.
   Validation uses mocked APIs and Sheets only; production history has not been
   rewritten. Push, then run the engine and grader to apply the repairs live.
+
+### Pregame props and diagnostic safety (2026-11-10)
+
+- Paid player-props requests exclude started games and unknown/invalid start
+  times. Start time is checked again before every market batch.
+- Timeouts, HTTP errors and malformed response structures are isolated per
+  batch. Successful pulls remain available; failed coverage is recorded in
+  NBA_Status and Run_Log and produces DEGRADED rather than a normal empty-market
+  state. A low-credit abort still stops the run explicitly.
+- Gemini is not called when there are no priced player markets.
+- Engine/grader console diagnostics, uncaught errors handled by RunLogger,
+  persisted Run_Log diagnostics and NBA_Status warnings redact registered API
+  secrets and credential query parameters. Environment, Colab and prompted
+  engine keys are registered. This does not retroactively clean historical logs
+  or control third-party library logging; rotate any previously exposed key.
+- Include the new nba_markets.py and nba_security.py modules in the commit.
+  All verification is offline with mocked APIs/Sheets; model policy and workflow
+  schedules are unchanged.

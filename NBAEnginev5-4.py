@@ -18,6 +18,8 @@ from google.oauth2.service_account import Credentials
 from nba_api.stats.endpoints import leaguegamelog, leaguedashteamstats, scoreboardv3, commonallplayers
 from nba_api.stats.static import teams
 from run_logger import RunLogger
+from nba_security import redact, register_secret, safe_print as print
+from nba_markets import is_pregame, fetch_batch
 import nba_sources
 import nba_injuries
 from nba_readiness import side_estimates, qualify_model_picks
@@ -148,13 +150,13 @@ def load_secret(name, prompt_text=None, allow_missing=False):
     env_val = os.environ.get(name)
     if env_val:
         print(f"🔐 Loaded {name} from environment!")
-        return env_val
+        return register_secret(env_val)
     try:
         from google.colab import userdata
         colab_val = userdata.get(name)
         if colab_val:
             print(f"🔐 Loaded {name} from Colab userdata!")
-            return colab_val
+            return register_secret(colab_val)
     except Exception:
         pass
     if allow_missing:
@@ -162,7 +164,7 @@ def load_secret(name, prompt_text=None, allow_missing=False):
     if not sys.stdin.isatty():
         raise RuntimeError(f"Missing required secret: {name}")
     import getpass
-    return getpass.getpass(prompt_text or f"Paste your {name}: ")
+    return register_secret(getpass.getpass(prompt_text or f"Paste your {name}: "))
 
 gc = get_gspread_client()
 try:
@@ -386,7 +388,7 @@ def fetch_odds_api_schedule_games(game_date):
             timeout=30,
         )
         if resp.status_code != 200:
-            print(f"   ⚠️ Odds API schedule fallback {resp.status_code}: {resp.text[:100]}")
+            print(f"   ⚠️ Odds API schedule fallback {resp.status_code}: {redact(resp.text)[:100]}")
             return None
         raw_games = resp.json()
         full_to_abbr = {t['full_name']: t['abbreviation'] for t in teams.get_teams()}
@@ -749,7 +751,7 @@ def publish_status(status):
     except gspread.exceptions.WorksheetNotFound:
         ws = sh.add_worksheet(title='NBA_Status', rows=10, cols=8)
     replace_sheet_values(ws, [['SLATE_DATE', 'SEASON', 'STATUS', 'GAMES', 'LAST_UPDATED', 'RUN_ID', 'WARNINGS', 'UPDATED_AT_UTC'],
-                              [today_str, NBA_SEASON, status, len(games_list), timestamp_pst, RUN_ID, '; '.join(PUBLICATION_WARNINGS), datetime.now(pytz.UTC).isoformat()]])
+                              [today_str, NBA_SEASON, status, len(games_list), timestamp_pst, RUN_ID, redact('; '.join(PUBLICATION_WARNINGS)), datetime.now(pytz.UTC).isoformat()]])
     runlog.record_write('NBA_Status', 1)
 
 if schedule_source == 'unavailable':
@@ -1008,7 +1010,7 @@ try:
             params={'apiKey': ODDS_API_KEY, 'regions': 'us', 'markets': 'spreads,totals', 'oddsFormat': 'american', 'bookmakers': 'draftkings'}, timeout=30)
         check_quota_or_abort(response, "NBA game odds")
         if response.status_code != 200:
-            print(f"❌ Odds API Error: {response.status_code} — {response.text[:200]}")
+            print(f"❌ Odds API Error: {response.status_code} — {redact(response.text)[:200]}")
             return []
         return response.json()
 
@@ -1480,11 +1482,17 @@ def print_best_book_summary(df_props, df_all_books):
 
 df_props = pd.DataFrame(columns=DK_PLAYER_PROPS_COLUMNS)
 df_all_books = pd.DataFrame(columns=ALL_BOOKS_PROPS_COLUMNS)
+def warn_props(reason):
+    reason = redact(reason)
+    PUBLICATION_WARNINGS.append(reason)
+    runlog.warn(reason)
+    print(reason)
+
 try:
     ev_resp = requests.get(f'https://api.the-odds-api.com/v4/sports/{SPORT}/events', params={'apiKey': ODDS_API_KEY}, timeout=15)
     check_quota_or_abort(ev_resp, "NBA events")
     if ev_resp.status_code != 200:
-        print(f"❌ Failed to fetch events: {ev_resp.status_code} — {ev_resp.text[:200]}")
+        warn_props(f'Player markets unavailable: events HTTP {ev_resp.status_code}')
     else:
         ev_data = ev_resp.json()
         events_by_id = {e['id']:e for e in ev_data}
@@ -1496,7 +1504,7 @@ try:
                 active_team_names.add('la clippers')
         tonight_ids = [
             e['id'] for e in ev_data
-            if event_is_on_date(e, today_str) and (
+            if event_is_on_date(e, today_str) and is_pregame(e) and (
                 e.get('home_team', '').lower() in active_team_names
                 or e.get('away_team', '').lower() in active_team_names)
         ]
@@ -1507,11 +1515,12 @@ try:
 
         all_book_rows = []
         api_errors = 0
-        last_resp = None
         for eid in tonight_ids:
             for batch in MARKET_BATCHES:
+                if not is_pregame(events_by_id[eid]):
+                    break
                 markets_param = batch if isinstance(batch, str) else ','.join(batch)
-                pr = requests.get(
+                data = fetch_batch(
                     f'https://api.the-odds-api.com/v4/sports/{SPORT}/events/{eid}/odds',
                     params={
                         'apiKey': ODDS_API_KEY,
@@ -1520,18 +1529,12 @@ try:
                         'bookmakers': ','.join(ACTIVE_PROP_BOOKMAKERS),
                         'oddsFormat': 'american'
                     },
-                    timeout=15
+                    quota_check=check_quota_or_abort,
+                    warn=lambda reason: warn_props(f'Event {eid}, markets {markets_param}: {reason}')
                 )
-                check_quota_or_abort(pr, f"NBA event props {eid}")
-                last_resp = pr
-                if pr.status_code != 200:
-                    if api_errors < 3:
-                        print(f"   ⚠️ Props API {pr.status_code} for event {eid}: {pr.text[:100]}")
+                if data is None:
                     api_errors += 1
-                    if api_errors > 5:
-                        print("   ⚠️ More than 5 props API errors — continuing with partial data")
                     continue
-                data = pr.json()
                 for bk in data.get('bookmakers', []):
                     book_key = bk.get('key', '')
                     if book_key not in ACTIVE_PROP_BOOKMAKERS:
@@ -1547,8 +1550,6 @@ try:
             time.sleep(1)
 
         df_all_books = finalize_all_books_frame(all_book_rows, timestamp_pst, name_fixes)
-        if last_resp is not None and hasattr(last_resp, 'headers'):
-            print(f"   📊 API quota remaining: {last_resp.headers.get('x-requests-remaining', '?')}")
         if api_errors:
             print(f"   ⚠️ Total props API errors: {api_errors}")
         for book in ACTIVE_PROP_BOOKMAKERS:
@@ -1571,7 +1572,7 @@ try:
             print("⚠️ No player props returned.")
         print_best_book_summary(df_props, df_all_books)
 except Exception as e:
-    print(f"❌ Failed to fetch player props: {e}")
+    warn_props(f'Player markets unavailable: {type(e).__name__}: {e}')
 
 # --- 5.92 CALCULATE EV% FOR EVERY PROP ---
 print("\n" + "=" * 60)
@@ -1753,7 +1754,7 @@ existing_run_numbers = pd.to_numeric(existing_daily_picks.get('RUN_NUMBER', pd.S
 today_run_number = int(existing_run_numbers.max()) + 1 if not existing_run_numbers.empty else 1
 refresh_clv_daily_picks(sh, today_str, df_props, timestamp_pst)
 
-if GEMINI_API_KEY and len(games_list) > 0:
+if GEMINI_API_KEY and len(games_list) > 0 and not df_props.empty:
     try:
         from google import genai
         from google.genai import types
@@ -2266,11 +2267,13 @@ IMPORTANT: Return ONLY the JSON array. No markdown, no preamble."""
         print(f"Raw: {raw[:500]}")
     except Exception as e:
         df_picks = pd.DataFrame()
-        reason=f'AI picks unavailable: {e}' if 'Gemini prepaid credits depleted' in str(e) else f'AI pick generation failed: {type(e).__name__}: {str(e)[:180]}'
+        reason=f'AI picks unavailable: {redact(e)}' if 'Gemini prepaid credits depleted' in str(e) else f'AI pick generation failed: {type(e).__name__}: {redact(e)[:180]}'
         PUBLICATION_WARNINGS.append(reason)
         runlog.warn(reason)
         print(f"❌ AI Picks failed: {e}")
 else:
+    if df_props.empty:
+        print('Skipping Gemini: no priced player markets available.')
     if not GEMINI_API_KEY:
         print("⚠️ No Gemini API key — skipping.")
         PUBLICATION_WARNINGS.append('AI picks unavailable: Gemini API key missing')

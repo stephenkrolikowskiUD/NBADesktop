@@ -2,6 +2,8 @@
 import os, json, sys
 from datetime import datetime
 import pytz
+import traceback as traceback_module
+from nba_security import redact, safe_print as print
 
 class RunLogger:
     HEADERS = [
@@ -35,7 +37,6 @@ class RunLogger:
 
     def install_exception_hook(self, on_failure=None):
         """Record uncaught failures before atexit writes the final heartbeat."""
-        previous_hook = sys.excepthook
         def hook(exc_type, exc, traceback):
             self.fail(exc)
             if on_failure:
@@ -43,7 +44,7 @@ class RunLogger:
                     on_failure()
                 except Exception as status_error:
                     print(f"⚠️ Could not publish failed status: {status_error}")
-            previous_hook(exc_type, exc, traceback)
+            sys.stderr.write(redact(''.join(traceback_module.format_exception(exc_type, exc, traceback))))
         sys.excepthook = hook
 
     def record_write(self, sheet_name, row_count):
@@ -53,11 +54,11 @@ class RunLogger:
             self.rows_written[sheet_name] = 0
 
     def warn(self, msg):
-        self.warnings.append(str(msg)[:200])
+        self.warnings.append(redact(msg)[:200])
 
     def fail(self, exc):
         self.status = "CRASH"
-        self.error = f"{type(exc).__name__}: {str(exc)[:300]}"
+        self.error = redact(f"{type(exc).__name__}: {exc}")[:300]
 
     def finalize_and_write(self):
         finished_dt = datetime.now(self.eastern)
@@ -75,8 +76,8 @@ class RunLogger:
             json.dumps(self.rows_written),
             self.picks_generated, self.picks_graded,
             self.hits, self.misses, self.dnp_count, self.not_found_count,
-            "; ".join(self.warnings)[:500],
-            self.error,
+            redact("; ".join(self.warnings))[:500],
+            redact(self.error),
             os.environ.get('GITHUB_SHA', 'local')[:7],
             self.odds_credits_remaining,
         ]
