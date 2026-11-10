@@ -32,6 +32,34 @@ def box_fixture():
 
 
 class SourcesTests(unittest.TestCase):
+    def test_identity_bridge_requires_shared_game_and_team(self):
+        old={'PLAYER_NAME':'Hugo González','PLAYER_ID':-999,'GAME_DATE':'2026-10-21','TEAM_ABBREVIATION':'BOS','PTS':10}
+        new={**old,'PLAYER_NAME':'Hugo Gonzalez','PLAYER_ID':123,'PTS':12}
+        result=nba_sources.reconcile_history(pd.DataFrame([old,new]))
+        self.assertEqual(len(result),1)
+        self.assertEqual(result.iloc[0]['PLAYER_ID'],123)
+        self.assertEqual(result.iloc[0]['PTS'],12)
+        for change in [{'GAME_DATE':'2026-10-22'},{'TEAM_ABBREVIATION':'DET'},{'PLAYER_ID':456}]:
+            rows=[old,{**new,**change}] if 'PLAYER_ID' not in change else [new,{**new,**change}]
+            with self.assertRaises(ValueError):nba_sources.reconcile_history(pd.DataFrame(rows))
+
+    def test_partial_box_retains_verified_players_with_warning(self):
+        payload=box_fixture()
+        payload['boxscore']['players'][0]['statistics'][0]['athletes'][0]['stats']=[]
+        game={'gameStatus':3,'ESPN_EVENT_ID':'FINAL-1','homeTeam':{'teamTricode':'BOS'},'awayTeam':{'teamTricode':'DET'}}
+        issues=[]
+        with patch.object(nba_sources,'schedule',return_value=[game]),patch.object(nba_sources,'_get',return_value=payload):
+            rows=nba_sources.final_boxes('2026-04-10',on_error=issues.append)
+        self.assertEqual(len(rows),9)
+        self.assertEqual(len(issues),1)
+        self.assertNotIn('BOS Player 0',[row['PLAYER_NAME'] for row in rows])
+
+    def test_existing_mixed_seed_recovers_before_refresh(self):
+        row={'PLAYER_NAME':'Example','PLAYER_ID':-999,'GAME_DATE':'2026-10-21','TEAM_ABBREVIATION':'BOS'}
+        with patch.object(nba_sources,'final_boxes',return_value=[]):
+            result=nba_sources.refresh_seed(pd.DataFrame([row,{**row,'PLAYER_ID':123}]),'2026-10-23','2026-27')
+        self.assertEqual(len(result),1)
+        self.assertEqual(result.iloc[0]['PLAYER_ID'],123)
     def test_ai_eligibility_requires_verified_pregame_clearance(self):
         now=datetime.now(timezone.utc)
         row={'STATUS':'AVAILABLE','COMMENCE_TIME':(now+timedelta(hours=1)).isoformat()}
@@ -104,10 +132,21 @@ class SourcesTests(unittest.TestCase):
 
 
 class GraderIntegrationTests(unittest.TestCase):
-    def grade(self,final_rows):
+    def grade(self,final_rows,changed=False,missing_column=False,partial=False):
         day=(datetime.now().date()-timedelta(days=1)).isoformat()
         headers=['DATE','player','team','prop_type','line','lean','HIT','ACTUAL_STAT','RESULT','RUN_NUMBER','confidence']
         ws=Sheet([headers,[day,'BOS Player 0','BOS','PTS','19.5','OVER','','','','1','LEAN']])
+        if missing_column:
+            ws.rows[0][7]='WRONG_COLUMN'
+        if changed:
+            original=[list(row) for row in ws.rows]
+            edited=[list(row) for row in ws.rows]
+            edited[1][1]='Different Player'
+            ws.get_all_values=lambda: original if not hasattr(ws,'read_once') else edited
+            original_get=ws.get_all_values
+            def read():
+                result=original_get();ws.read_once=True;return result
+            ws.get_all_values=read
         ws.batch_update=lambda cells:[ws.rows[int(''.join(c for c in cell['range'] if c.isdigit()))-1].__setitem__(ord(cell['range'][0])-65,cell['values'][0][0]) for cell in cells]
         class Book:
             def __init__(self):self.tabs={'Daily_Picks':ws}
@@ -120,7 +159,12 @@ class GraderIntegrationTests(unittest.TestCase):
         client=type('Client',(),{'open_by_key':lambda self,key:book})()
         with tempfile.TemporaryDirectory() as backup, contextlib.ExitStack() as stack:
             stack.enter_context(patch('gspread.authorize',return_value=client));stack.enter_context(patch('google.oauth2.service_account.Credentials.from_service_account_info',return_value=object()))
-            stack.enter_context(patch('atexit.register'));stack.enter_context(patch.object(nba_sources,'final_boxes',return_value=final_rows))
+            stack.enter_context(patch('atexit.register'))
+            stack.enter_context(patch('sys.excepthook'))
+            def boxes(date,on_error=None):
+                if partial:on_error({'event':'broken','reason':'Incomplete stats'})
+                return final_rows
+            stack.enter_context(patch.object(nba_sources,'final_boxes',side_effect=boxes))
             stack.enter_context(patch.dict(os.environ,{'GOOGLE_SERVICE_ACCOUNT_JSON':'{}','NBA_BACKUP_DIR':backup}))
             stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
             runpy.run_path(str(ROOT/'NBAGrader5-4.py'))
@@ -136,6 +180,18 @@ class GraderIntegrationTests(unittest.TestCase):
         row={'PLAYER_NAME':'BOS Player 0 Jr.','PTS':20,'REB':10,'AST':10,'STL':1,'BLK':1,'TOV':2,'FG3M':2,'MIN':30,'DNP':False}
         self.assertEqual(self.grade([row])['HIT'],'YES')
     def test_verified_dnp(self):self.assertEqual(self.grade([{'PLAYER_NAME':'BOS Player 0','DNP':True}])['HIT'],'DNP')
+    def test_reordered_sheet_aborts_instead_of_writing_wrong_player(self):
+        with self.assertRaisesRegex(RuntimeError,'changed during grading'):
+            self.grade([{'PLAYER_NAME':'BOS Player 0','DNP':True}],changed=True)
+    def test_missing_columns_fail_nonzero(self):
+        with self.assertRaisesRegex(RuntimeError,'Missing ACTUAL_STAT'):
+            self.grade([],missing_column=True)
+    def test_partial_fetch_still_grades_verified_player(self):
+        self.assertEqual(self.grade([{'PLAYER_NAME':'BOS Player 0','DNP':True}],partial=True)['HIT'],'DNP')
+    def test_wrong_team_and_ambiguous_name_remain_pending(self):
+        self.assertEqual(self.grade([{'PLAYER_NAME':'BOS Player 0','TEAM_ABBREVIATION':'DET','DNP':True}])['HIT'],'')
+        self.assertEqual(self.grade([{'PLAYER_NAME':'BOS Player 0','DNP':True},
+                                     {'PLAYER_NAME':'BOS Player 0 Jr.','DNP':True}])['HIT'],'')
 
 
 if __name__=='__main__':unittest.main()

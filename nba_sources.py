@@ -148,6 +148,7 @@ def final_boxes(date,on_error=None):
 def refresh_seed(existing,date,season):
     """Re-fetch corrections and catch up from the seed, retaining historical raw rows."""
     import pandas as pd
+    existing = reconcile_history(existing)
     current=existing[pd.to_datetime(existing['GAME_DATE'],errors='coerce').dt.year>=int(season[:4])].copy()
     # Season boundaries use September, so exclude spring rows from the previous season.
     current=current[pd.to_datetime(current['GAME_DATE'],errors='coerce')>=pd.Timestamp(int(season[:4]),9,1)]
@@ -178,6 +179,38 @@ def refresh_seed(existing,date,season):
     fresh['PLAYER_NAME']=fresh['PERSON_KEY'].map(known['PLAYER_NAME']).fillna(fresh['PLAYER_NAME'])
     fresh['PLAYER_ID']=fresh['PLAYER_ID'].fillna(-pd.to_numeric(fresh['ESPN_PLAYER_ID'],errors='coerce'))
     fresh=fresh.drop(columns='PERSON_KEY')
-    result=pd.concat([existing,fresh],ignore_index=True).drop_duplicates(['PLAYER_NAME','GAME_DATE','TEAM_ABBREVIATION'],keep='last')
+    result=reconcile_history(pd.concat([existing,fresh],ignore_index=True))
     result.attrs['REFRESH_WARNINGS']=issues
     return result
+
+
+def reconcile_history(frame):
+    """Bridge synthetic ESPN IDs only with an overlapping NBA game/team record."""
+    import pandas as pd
+    if frame.empty:
+        return frame.copy()
+    out=frame.copy()
+    out['_person']=out['PLAYER_NAME'].map(norm)
+    out['_day']=pd.to_datetime(out['GAME_DATE'],errors='coerce').dt.strftime('%Y-%m-%d')
+    out['_team']=out['TEAM_ABBREVIATION'].map(_abbr)
+    out['PLAYER_ID']=pd.to_numeric(out['PLAYER_ID'],errors='coerce')
+    for person, group in out.groupby('_person'):
+        ids=set(group['PLAYER_ID'].dropna())
+        if len(ids)<=1:
+            continue
+        positive={value for value in ids if value>0}
+        synthetic={value for value in ids if value<0}
+        if not person or len(positive)!=1 or not synthetic or 0 in ids:
+            raise ValueError('Ambiguous normalized player identity in historical seed')
+        canonical=next(iter(positive))
+        nba=group[group['PLAYER_ID']==canonical]
+        nba_games=set(zip(nba['_day'].fillna(''),nba['_team']))
+        for source_id in synthetic:
+            espn=group[group['PLAYER_ID']==source_id]
+            overlap=nba_games & set(zip(espn['_day'].fillna(''),espn['_team']))
+            if not any(day and team and team!='NAN' for day,team in overlap):
+                raise ValueError('Unverified ESPN/NBA identity bridge in historical seed')
+        out.loc[group.index,'PLAYER_ID']=canonical
+        out.loc[group.index,'PLAYER_NAME']=nba.iloc[-1]['PLAYER_NAME']
+    out=out.drop_duplicates(['PLAYER_ID','_person','_day','_team'],keep='last')
+    return out.drop(columns=['_person','_day','_team'])

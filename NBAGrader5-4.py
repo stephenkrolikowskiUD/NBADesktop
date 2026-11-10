@@ -47,6 +47,7 @@ SNAPSHOT_DATE = "2026-05-04"
 sh = gc.open_by_key(SHEET_ID)
 print(f"✅ Connected to Google Sheet: {SHEET_ID}")
 runlog = RunLogger(gc, SHEET_ID, sport='NBA', kind='grader')
+runlog.install_exception_hook()
 atexit.register(runlog.finalize_and_write)
 RETRY_DNP_LOOKBACK_DAYS = 7
 eastern = pytz.timezone('US/Eastern')
@@ -90,7 +91,7 @@ except Exception as e:
 
 if len(all_rows) <= 1:
     print("⚠️ No picks to grade — sheet is empty.")
-    headers = ['DATE', 'HIT']
+    headers = ['DATE', 'HIT', 'ACTUAL_STAT']
     df_picks = pd.DataFrame(columns=headers)
 else:
     headers = all_rows[0]
@@ -165,15 +166,16 @@ def normalize_person_name(name):
     text = re.sub(r'\b(jr|sr|ii|iii|iv)\b', '', text)
     return re.sub(r"\s+", " ", text).strip()
 
-def find_box_score(box_lookup, player, date):
-    box = box_lookup.get((player, date))
-    if box is not None:
-        return box
+def find_box_score(box_lookup, player, date, team=''):
     player_norm = normalize_person_name(player)
+    matches = []
     for (bn, bd), bv in box_lookup.items():
         if bd == date and normalize_person_name(bn) == player_norm:
-            return bv
-    return None
+            box_team = bv.get('TEAM_ABBREVIATION', '')
+            if team and box_team and nba_sources._abbr(team) != nba_sources._abbr(box_team):
+                continue
+            matches.append(bv)
+    return matches[0] if len(matches) == 1 else None
 
 def grade_pick(actual, line_val, lean):
     actual, line_val = safe_float(actual), safe_float(line_val)
@@ -580,7 +582,10 @@ box_lookup = {}
 box_date_set = set()
 for date_to_grade in dates_to_grade:
     try:
-        final_rows = nba_sources.final_boxes(date_to_grade)
+        issues = []
+        final_rows = nba_sources.final_boxes(date_to_grade, on_error=issues.append)
+        for issue in issues:
+            runlog.warn(f"Incomplete final box {date_to_grade} event {issue.get('event', '')}: {issue.get('reason', '')}")
         for final_row in final_rows:
             box_lookup[(final_row['PLAYER_NAME'], date_to_grade)] = box_metrics(final_row)
         if final_rows:
@@ -609,7 +614,7 @@ result_col = col_idx.get('RESULT')
 
 if actual_col is None or hit_col is None:
     print("❌ Missing ACTUAL_STAT or HIT columns in Daily_Picks")
-    raise SystemExit
+    raise RuntimeError('Missing ACTUAL_STAT or HIT columns in Daily_Picks')
 
 def col_letter(idx):
     if idx < 26:
@@ -630,7 +635,7 @@ for idx, pick in ungraded.iterrows():
         continue
 
     line_val = safe_float(line)
-    box = find_box_score(box_lookup, player, date)
+    box = find_box_score(box_lookup, player, date, pick.get('team', ''))
     date_has_logs = date in box_date_set
 
     # Row in the sheet (1-indexed, +1 for header)
@@ -638,6 +643,8 @@ for idx, pick in ungraded.iterrows():
 
     if box is None:
         not_found += 1
+        if pd.Timestamp(date) < retry_cutoff:
+            runlog.warn(f'Grading review required: {player} {date} pending over 7 days; no verified box')
         print(f"   ⏳ {player} ({date}) — no verified player box; leaving pending")
         continue
 
@@ -652,11 +659,16 @@ for idx, pick in ungraded.iterrows():
     actual = box.get(prop_type)
     if actual is None:
         not_found += 1
+        runlog.warn(f'Grading review required: {player} {date}, missing metric {prop_type}')
         print(f"   ❓ {player} ({date}) — prop_type '{prop_type}' not in box score")
         continue
 
     actual = safe_float(actual)
     hit_str, result_str = grade_pick(actual, line_val, lean)
+    if not hit_str:
+        runlog.warn(f'Grading review required: invalid line/side/stat for {player} {date}')
+        not_found += 1
+        continue
     if hit_str == 'PUSH':
         pushes += 1
     elif hit_str == 'YES':
@@ -678,7 +690,11 @@ for idx, pick in ungraded.iterrows():
 if updates:
     print(f"\n📤 Writing {len(updates)} cell updates to Google Sheets...")
     cells = [{'range': u['range'], 'values': [[u['value']]]} for u in updates]
-    backup_values(ws.get_all_values(), 'Daily_Picks-before-grading')
+    latest_rows = ws.get_all_values()
+    # Appends are safe; a reorder/edit of the read snapshot invalidates row offsets.
+    if latest_rows[:len(all_rows)] != all_rows:
+        raise RuntimeError('Daily_Picks changed during grading; refusing stale row writes. Retry grading.')
+    backup_values(latest_rows, 'Daily_Picks-before-grading')
     ws.batch_update(cells)
     print("✅ Sheet updated!")
 else:

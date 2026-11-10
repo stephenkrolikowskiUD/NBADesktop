@@ -848,7 +848,7 @@ for _, row in df_logs_api.iterrows():
     keep_mask.append(True)
 new_player_logs = df_logs_api.loc[keep_mask, PLAYER_LOG_BASE_COLS].copy()
 combined_logs = pd.concat([existing_player_logs[PLAYER_LOG_BASE_COLS], new_player_logs], ignore_index=True)
-combined_logs = combined_logs.drop_duplicates(subset=['PLAYER_ID', 'PLAYER_NAME', 'GAME_DATE', 'MATCHUP', 'TEAM_ABBREVIATION'], keep='last')
+combined_logs = nba_sources.reconcile_history(combined_logs)
 df_logs = combined_logs.copy()
 
 

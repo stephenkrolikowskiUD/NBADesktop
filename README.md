@@ -187,3 +187,26 @@ Early-season analysis uses an unmixed prior season until five current-season gam
   Push these changes and run the engine to deploy; a second successful run should
   retain any repeated qualifying picks under the latest NBA_Status RUN_ID.
   These changes do not repair GitHub schedule delivery or alter model policy.
+
+### Grading and history integrity repair (2026-11-09)
+
+- The grader installs the crash logger and raises an error on missing required
+  grading columns. An empty ledger remains a normal no-work case.
+- Verified final player boxes can be graded even when other players or games
+  have incomplete data. Gaps produce Run_Log warnings; missing participation
+  evidence never becomes an automatic DNP or loss. Unresolved missing boxes
+  older than seven days are flagged for review and remain retryable.
+- Before writing grades, the grader re-reads the ledger and rejects edits or
+  reorders to its original snapshot. Appended rows are allowed. This is an
+  optimistic safety check, not an atomic Sheets transaction: avoid manual edits
+  during grading, and keep engine/grader writes serialized.
+- Name matches must be unambiguous; an explicitly mismatched team is rejected.
+  Invalid line/side/stat inputs are warned about rather than written as grades.
+- Mixed ESPN fallback IDs and NBA IDs are reconciled only when normalized names
+  and an overlapping game date/team agree, with exactly one positive NBA ID.
+  Two positive IDs or an unproven bridge fail closed. Matching records are
+  deduplicated before metrics; the newest supplied record wins. This also repairs
+  already mixed seeds when sufficient evidence exists, without name-only merging.
+- These repairs do not change pick probabilities, thresholds, or scheduling.
+  Validation uses mocked APIs and Sheets only; production history has not been
+  rewritten. Push, then run the engine and grader to apply the repairs live.

@@ -2,6 +2,12 @@
 const fs=require('node:fs');
 const vm=require('node:vm');
 const assert=require('node:assert/strict');
+// Keep same-day pregame fixtures away from midnight; contract fixtures use real time.
+const clock=process.env.NBA_CONTRACT_FIXTURE?globalThis.Date.now():globalThis.Date.parse('2026-11-09T17:00:00Z');
+class Date extends globalThis.Date {
+  constructor(...args){super(...(args.length?args:[clock]));}
+  static now(){return clock;}
+}
 const html=fs.readFileSync('index.html','utf8');
 const code=html.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/loadAllData\(\);\s*setInterval[\s\S]*$/,'');
 const app={innerHTML:''};

@@ -151,7 +151,8 @@ class EngineTests(unittest.TestCase):
         book=existing_book if existing_book is not None else Workbook(seed)
         roster=pd.DataFrame([{'DISPLAY_FIRST_LAST':'Example Player','TEAM_ABBREVIATION':'LAL'}])
         market_line=2.5 if prop_type=='AST' else 10.5
-        event={'id':'today','commence_time':target+'T23:59:59-04:00','home_team':'Los Angeles Lakers','away_team':'New York Knicks'}
+        tipoff=datetime.fromisoformat(target+'T23:59:59').replace(tzinfo=ZoneInfo('America/New_York')).isoformat()
+        event={'id':'today','commence_time':tipoff,'home_team':'Los Angeles Lakers','away_team':'New York Knicks'}
         def get(url, **kwargs):
             if url.endswith('/events'): return Response([event] if games else [])
             if url.endswith('/odds'):
@@ -176,7 +177,7 @@ class EngineTests(unittest.TestCase):
             stack.enter_context(patch('google.oauth2.service_account.Credentials.from_service_account_info',return_value=object()))
             stack.enter_context(patch('requests.get',side_effect=get))
             stack.enter_context(patch.object(nba_injuries,'fetch_official_report',return_value={'slate_date':target,'source':'fixture','reported_at':datetime.now(ZoneInfo('UTC')).isoformat(),'official':True,'submitted_teams':['LAL','NYK'],'players':[]}))
-            stack.enter_context(patch.object(nba_sources,'schedule',return_value=[{'homeTeam':{'teamTricode':'LAL'},'awayTeam':{'teamTricode':'NYK'},'gameTimeUTC':target+'T23:59:59-04:00'}] if games else []))
+            stack.enter_context(patch.object(nba_sources,'schedule',return_value=[{'homeTeam':{'teamTricode':'LAL'},'awayTeam':{'teamTricode':'NYK'},'gameTimeUTC':tipoff}] if games else []))
             stack.enter_context(patch.object(nba_sources,'refresh_seed',return_value=pd.concat([seed,fresh],ignore_index=True)) if public_source else patch.object(nba_sources,'refresh_seed',side_effect=RuntimeError('Fresh NBA logs unavailable')))
             if ai:
                 pick={'rank':1,'player':'Example Player','team':'WRONG','game':'LAL @ NYK',
