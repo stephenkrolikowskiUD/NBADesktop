@@ -1,0 +1,10 @@
+name = "nba-engine-dispatcher"
+main = "worker.mjs"
+compatibility_date = "2026-11-10"
+
+[triggers]
+# Both UTC hours cover Eastern standard/daylight time; code gates on 10 AM ET.
+crons = ["0 14,15 * * *", "20 14,15 * * *"]
+
+[observability]
+enabled = true

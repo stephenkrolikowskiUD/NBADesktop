@@ -1,8 +1,9 @@
 """Describe which scheduled slot a GitHub Actions run belongs to and how late it arrived.
 
 Diagnostics only: this module never changes which slate the engine processes.
-GitHub exposes the triggering cron string as ``github.event.schedule``; with one
-time per cron entry, that string identifies the intended slot exactly.
+GitHub exposes the triggering cron string as ``github.event.schedule``. It
+identifies a time of day, not the original date of a delayed trigger. The engine
+uses nba_dispatch.py separately to reject stale inferred dates and deduplicate.
 
 Usage in a workflow step (no secrets needed):
     python nba_schedule.py   # reads GITHUB_EVENT_NAME, EVENT_SCHEDULE, GITHUB_RUN_ID, ...

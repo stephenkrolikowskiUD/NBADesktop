@@ -218,6 +218,21 @@ dashboard. Keep it tracked: documentation contains GitHub Actions expressions
 that Liquid otherwise interprets as invalid template syntax. This change needs
 a Pages deployment, not an engine or grader run.
 
+### External 10 AM dispatcher (2026-11-11)
+
+Cloudflare dispatcher code and slot guards are implemented locally. **Not yet
+deployed or verified unattended.** Follow [the activation guide](docs/SCHEDULE_DISPATCHER_SETUP.md)
+after pushing these changes. The personal Cloudflare Worker needs the new code
+and two UTC cron triggers; creating a Hello World Worker is not sufficient.
+
+The dispatcher sends an explicit Eastern slate date and 10:00 slot. Native GitHub
+crons remain backups. A pre-API guard skips a duplicate only after a verified
+READY/NO_GAMES publication; failed/degraded slots remain retryable. Run_Log and
+NBA_Status carry the slot and publication identity. The 10:20 watchdog checks
+both GitHub and the published status. Notifications require a separate personal
+webhook; until configured, failures are logged only. All tests are offline and
+no paid engine run was triggered as part of implementation.
+
 ### Pregame props and diagnostic safety (2026-11-10)
 
 - Paid player-props requests exclude started games and unknown/invalid start

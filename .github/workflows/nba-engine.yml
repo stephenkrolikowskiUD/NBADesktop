@@ -1,4 +1,5 @@
 name: NBA Engine
+run-name: NBA Engine ${{ inputs.slot && format('{0}@{1}', inputs.slate_date, inputs.slot) || github.event.schedule || 'manual' }}
 
 on:
   schedule:
@@ -15,6 +16,11 @@ on:
         required: false
         default: 'next'
         type: string
+      slot:
+        description: 'Dispatcher slot; leave blank for a normal manual run'
+        required: false
+        default: ''
+        type: string
 
 concurrency:
   group: nba-sheet-writer
@@ -26,6 +32,8 @@ jobs:
     timeout-minutes: 30
     env:
       NBA_SLATE_DATE: ${{ github.event_name == 'schedule' && 'today' || inputs.slate_date || 'next' }}
+      NBA_DISPATCH_SLOT: ${{ inputs.slot || '' }}
+      EVENT_SCHEDULE: ${{ github.event.schedule }}
       NBA_SHEET_ID: ${{ vars.NBA_SHEET_ID }}
       NBA_BACKUP_DIR: nba_backups
       NBA_PLAYER_LOG_SOURCE: espn

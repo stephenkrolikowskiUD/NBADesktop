@@ -1,6 +1,17 @@
-# 10 AM Dispatcher: Design (proposed, not built)
+# 10 AM Dispatcher: Original Design
 
-Status: draft for approval. Nothing here has been provisioned, and no credentials have been created.
+Status (2026-11-11): implemented and tested locally, not yet deployed or verified
+unattended. The user created a personal Cloudflare Worker and its GITHUB_TOKEN
+secret; the last observed deployed code was still Hello World. Follow
+[the rollout guide](SCHEDULE_DISPATCHER_SETUP.md), which supersedes the proposal
+below. Do not confuse local tests with a working production schedule.
+
+Implementation differences: only a read-back READY or NO_GAMES publication with
+a publication run ID blocks duplicates; OK/WARN alone is insufficient. Native
+cron dates are inferred, not exact, and deliveries beyond six hours or across
+midnight are skipped. The watchdog checks a matching slot and positive ready
+state. Alerts require a separately configured personal webhook. No laptop or
+company account is used. See the setup guide for remaining limitations.
 
 ## Problem
 

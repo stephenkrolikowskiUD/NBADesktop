@@ -2,6 +2,7 @@
 import os, json, sys
 from datetime import datetime
 import pytz
+import gspread
 import traceback as traceback_module
 from nba_security import redact, safe_print as print
 
@@ -11,6 +12,7 @@ class RunLogger:
         'status', 'trigger', 'rows_written', 'picks_generated', 'picks_graded',
         'hits', 'misses', 'dnp_count', 'not_found_count', 'warnings', 'error', 'git_sha',
         'ODDS_CREDITS_REMAINING',
+        'slot_key', 'publication_status', 'publication_run_id',
     ]
 
     def __init__(self, gspread_client, sheet_id, sport, kind):
@@ -34,6 +36,9 @@ class RunLogger:
         self.odds_credits_remaining = ""
         self.error = ""
         self.status = "OK"
+        self.slot_key = ''
+        self.publication_status = ''
+        self.publication_run_id = ''
 
     def install_exception_hook(self, on_failure=None):
         """Record uncaught failures before atexit writes the final heartbeat."""
@@ -80,20 +85,26 @@ class RunLogger:
             redact(self.error),
             os.environ.get('GITHUB_SHA', 'local')[:7],
             self.odds_credits_remaining,
+            self.slot_key, self.publication_status, self.publication_run_id,
         ]
         try:
             sh = self.gc.open_by_key(self.sheet_id)
             try:
                 ws = sh.worksheet('Run_Log')
-            except Exception:
+            except gspread.exceptions.WorksheetNotFound:
                 ws = sh.add_worksheet(title='Run_Log', rows=1000, cols=len(self.HEADERS))
                 ws.append_row(self.HEADERS)
+                headers = self.HEADERS
             else:
                 existing_headers = ws.row_values(1)
                 missing_headers = [h for h in self.HEADERS if h not in existing_headers]
+                headers = existing_headers + missing_headers
                 if missing_headers:
-                    ws.update('A1', [existing_headers + missing_headers])
-            ws.append_row(row, value_input_option='RAW')
+                    if ws.col_count < len(headers):
+                        ws.resize(cols=len(headers))
+                    ws.update(values=[headers], range_name='A1')
+            values = dict(zip(self.HEADERS, row))
+            ws.append_row([values.get(h, '') for h in headers], value_input_option='RAW')
             print(f"📝 Run_Log: {self.status} ({duration}s) — {self.run_id}")
         except Exception as e:
             print(f"⚠️ Failed to write Run_Log row: {e}")

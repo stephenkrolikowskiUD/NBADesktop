@@ -18,6 +18,7 @@ from google.oauth2.service_account import Credentials
 from nba_api.stats.endpoints import leaguegamelog, leaguedashteamstats, scoreboardv3, commonallplayers
 from nba_api.stats.static import teams
 from run_logger import RunLogger
+from nba_dispatch import guard_run, verify_publication
 from nba_security import redact, register_secret, safe_print as print
 from nba_markets import is_pregame, fetch_batch
 import nba_sources
@@ -175,6 +176,8 @@ try:
     runlog.install_exception_hook(on_failure=lambda: publish_status('FAILED') if 'publish_status' in globals() else None)
 except Exception as e:
     raise RuntimeError("Could not open NBA spreadsheet") from e
+
+guard_run(sh, runlog)
 
 ODDS_API_KEY = load_secret('ODDS_API_KEY', '🔑 Paste your Odds API Key: ')
 GEMINI_API_KEY = load_secret('GEMINI_API_KEY', allow_missing=True)
@@ -749,9 +752,9 @@ def publish_status(status):
     try:
         ws = sh.worksheet('NBA_Status')
     except gspread.exceptions.WorksheetNotFound:
-        ws = sh.add_worksheet(title='NBA_Status', rows=10, cols=8)
-    replace_sheet_values(ws, [['SLATE_DATE', 'SEASON', 'STATUS', 'GAMES', 'LAST_UPDATED', 'RUN_ID', 'WARNINGS', 'UPDATED_AT_UTC'],
-                              [today_str, NBA_SEASON, status, len(games_list), timestamp_pst, RUN_ID, redact('; '.join(PUBLICATION_WARNINGS)), datetime.now(pytz.UTC).isoformat()]])
+        ws = sh.add_worksheet(title='NBA_Status', rows=10, cols=9)
+    replace_sheet_values(ws, [['SLATE_DATE', 'SEASON', 'STATUS', 'GAMES', 'LAST_UPDATED', 'RUN_ID', 'WARNINGS', 'UPDATED_AT_UTC', 'SLOT_KEY'],
+                              [today_str, NBA_SEASON, status, len(games_list), timestamp_pst, RUN_ID, redact('; '.join(PUBLICATION_WARNINGS)), datetime.now(pytz.UTC).isoformat(), runlog.slot_key]])
     runlog.record_write('NBA_Status', 1)
 
 if schedule_source == 'unavailable':
@@ -772,6 +775,7 @@ if not games_list:
         replace_sheet_values(ws, [headers])
         runlog.record_write(tab, 0)
     publish_status('NO_GAMES')
+    verify_publication(sh, runlog, today_str, RUN_ID, 'NO_GAMES')
     raise SystemExit(0)
 publish_status('UPDATING')
 
@@ -2458,7 +2462,9 @@ if not df_picks.empty:
 else:
     print("⚠️ Skipping Daily_Picks — no picks.")
 
-publish_status('WARMUP' if df_tonight_sheet.empty else ('DEGRADED' if PUBLICATION_WARNINGS else ('READY' if not df_props.empty else 'AWAITING_PROPS')))
+final_status = 'WARMUP' if df_tonight_sheet.empty else ('DEGRADED' if PUBLICATION_WARNINGS else ('READY' if not df_props.empty else 'AWAITING_PROPS'))
+publish_status(final_status)
+verify_publication(sh, runlog, today_str, RUN_ID, final_status)
 
 print("\n" + "=" * 60)
 print("🏀 NBA ENGINE v8.5 — RUN COMPLETE")
