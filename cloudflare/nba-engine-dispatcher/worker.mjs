@@ -20,12 +20,17 @@ async function github(env, path, init = {}, fetcher = fetch) {
   let response;
   try {
     response = await fetcher(API + path, {
-      ...init, redirect: 'error', signal: AbortSignal.timeout(15000),
+      ...init, redirect: 'manual', signal: AbortSignal.timeout(15000),
       headers: { Accept: 'application/vnd.github+json',
         Authorization: `Bearer ${env.GITHUB_TOKEN}`, 'User-Agent': 'nba-engine-dispatcher',
         'X-GitHub-Api-Version': '2022-11-28', 'Content-Type': 'application/json' },
     });
-  } catch { throw new Error('GitHub request failed or timed out'); }
+  } catch (error) {
+    // Classify without echoing request headers, token values or provider bodies.
+    const kind = ['TypeError', 'TimeoutError', 'AbortError'].includes(error?.name) ? error.name : 'NetworkError';
+    throw new Error(`GitHub ${init.method || 'GET'} ${path.split('?')[0] || '/'} failed or timed out (${kind})`);
+  }
+  if (response.status >= 300 && response.status < 400) throw new Error('GitHub redirect refused; credentials were not forwarded');
   if (!response.ok) throw new Error(`GitHub HTTP ${response.status}; check token, workflow and inputs`);
   return response;
 }
@@ -99,7 +104,7 @@ async function reportFailure(env, message, fetcher) {
     const result = await fetcher(env.ALERT_WEBHOOK_URL, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text: `NBA morning dispatcher: ${message}` }),
-      signal: AbortSignal.timeout(10000), redirect: 'error',
+      signal: AbortSignal.timeout(10000), redirect: 'manual',
     });
     if (!result.ok) console.error(`Alert delivery failed: HTTP ${result.status}`);
   } catch { console.error('Alert delivery failed'); }
@@ -127,15 +132,24 @@ export default {
   async fetch(request, env) {
     const path = new URL(request.url).pathname;
     if (request.method === 'GET' && path === '/') {
-      return Response.json({ service: 'nba-engine-dispatcher', version: 1,
+      return Response.json({ service: 'nba-engine-dispatcher', version: 2,
         schedule: '10:00 America/New_York; watchdog 10:20',
         tokenConfigured: Boolean(env.GITHUB_TOKEN), alertsConfigured: Boolean(env.ALERT_WEBHOOK_URL),
         note: 'Health endpoint only; does not confirm cron installation or publication.' });
     }
     // Optional one-off activation test. Visiting the public URL never starts an engine.
-    if (request.method !== 'POST' || !['/dispatch', '/check'].includes(path)) return new Response('Not found', { status: 404 });
+    if (request.method !== 'POST' || !['/dispatch', '/check', '/connectivity'].includes(path)) return new Response('Not found', { status: 404 });
     if (!env.DISPATCH_TEST_TOKEN || request.headers.get('Authorization') !== `Bearer ${env.DISPATCH_TEST_TOKEN}`) {
       return new Response('Unauthorized', { status: 401 });
+    }
+    if (path === '/connectivity') {
+      try {
+        const response = await github(env, '/runs?per_page=1');
+        const data = await response.json();
+        if (!Array.isArray(data.workflow_runs)) throw new Error('Invalid GitHub runs response');
+        return Response.json({ githubReadAccess: true, engineStarted: false,
+          note: 'Read access verified; dispatch write permission is not tested.' });
+      } catch (error) { return Response.json({ error: error.message }, { status: 502 }); }
     }
     const now = Date.now(), local = slotAt(now);
     if (Number(local.hour) < 10) return new Response('Test only after 10 AM ET', { status: 409 });

@@ -37,6 +37,23 @@ Wrangler deployment. Do not use two independently maintained configurations.
 
 ## Verify before calling it done
 
+### Version 2 connection check
+
+The first production morning invoked Cloudflare but failed before GitHub received
+a dispatch. Version 1 used redirect:error, unsupported in Workers. Version 2 uses
+manual redirects and rejects 3xx responses without forwarding credentials.
+Deploy the updated worker.mjs; the public root must report version 2. Leave both
+cron triggers and GITHUB_TOKEN unchanged.
+
+Add a temporary Production secret DISPATCH_TEST_TOKEN with a fresh random value.
+From Cloudflare's HTTP test panel, POST to /connectivity with the header
+Authorization: Bearer <the temporary value>. Do not put credentials in a URL or
+share screenshots of the header. This endpoint works at any hour and makes only
+a GitHub GET request, not a workflow dispatch or paid API call. Success returns
+githubReadAccess:true and engineStarted:false. This does not prove Actions write
+permission; the separately authorized live dispatch below is still necessary.
+Delete the temporary secret when testing is finished.
+
 - Optional controlled live test, after 10 AM ET: add a temporary secret
   DISPATCH_TEST_TOKEN containing a fresh random value. An authenticated POST to
   /dispatch with Authorization: Bearer <that value> dispatches today's explicit

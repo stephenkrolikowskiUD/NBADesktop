@@ -4,6 +4,9 @@ import worker, {slotAt, runScheduled, dispatch, watchdog, parseCSV} from '../clo
 const env = {GITHUB_TOKEN: 'fixture-only'};
 let calls = [];
 const fetcher = async (url, init) => {
+  // Match Workers, not Node's more permissive redirect support.
+  if (init.redirect === 'error') throw new TypeError('Unsupported redirect mode');
+  assert.equal(init.redirect, 'manual');
   calls.push([url, init]);
   return url.includes('/runs?') ? Response.json({workflow_runs: []}) : new Response(null, {status: 204});
 };
@@ -28,6 +31,25 @@ await assert.rejects(runScheduled({scheduledTime: Date.parse('2026-11-11T15:00:0
   Date.parse('2026-11-11T15:11:00Z'), fetcher), /delivery window/);
 assert.equal((await worker.fetch(new Request('https://fixture/'), env)).status, 200);
 assert.equal((await worker.fetch(new Request('https://fixture/dispatch', {method: 'POST'}), env)).status, 401);
+assert.equal((await worker.fetch(new Request('https://fixture/connectivity', {method: 'POST'}), env)).status, 401);
+assert.equal((await (await worker.fetch(new Request('https://fixture/'), env)).json()).version, 2);
+await assert.rejects(dispatch(env, '2026-11-11', async () => new Response(null, {status: 302})), /redirect refused/);
+await assert.rejects(dispatch(env, '2026-11-11', async () => {throw new TypeError('fixture-only secret');}),
+  error => error.message.includes('TypeError') && !error.message.includes('fixture-only'));
+const originalFetch = globalThis.fetch;
+try {
+  globalThis.fetch = async (url, init) => {
+    assert.equal(init.method || 'GET', 'GET');
+    assert.ok(url.endsWith('/runs?per_page=1'));
+    assert.equal(init.redirect, 'manual');
+    return Response.json({workflow_runs: []});
+  };
+  const response = await worker.fetch(new Request('https://fixture/connectivity', {
+    method: 'POST', headers: {Authorization: 'Bearer temporary-test'},
+  }), {...env, DISPATCH_TEST_TOKEN: 'temporary-test'});
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).engineStarted, false);
+} finally { globalThis.fetch = originalFetch; }
 await assert.rejects(dispatch(env, '2026-11-11', async () => new Response('', {status: 401})), /HTTP 401/);
 await assert.rejects(dispatch(env, '2026-11-11', async () => {throw new Error('private request details');}), /failed or timed out/);
 const run = {display_title: 'NBA Engine 2026-11-11@10:00', status: 'completed', conclusion: 'success'};

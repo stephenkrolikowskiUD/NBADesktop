@@ -228,6 +228,13 @@ a Pages deployment, not an engine or grader run.
 
 ### External 10 AM dispatcher (2026-11-11)
 
+Dispatcher v2 fixes a Workers runtime incompatibility: `redirect: "error"` threw
+before sending GitHub requests. Use `manual` and reject redirects without
+forwarding credentials. The authenticated POST /connectivity endpoint tests
+GitHub read access without starting an engine. Error diagnostics identify the
+operation and exception category without exposing tokens. Redeploy Worker code;
+keep existing cron triggers and GITHUB_TOKEN. Production success remains unverified.
+
 Cloudflare dispatcher code and slot guards are implemented locally. **Not yet
 deployed or verified unattended.** Follow [the activation guide](docs/SCHEDULE_DISPATCHER_SETUP.md)
 after pushing these changes. The personal Cloudflare Worker needs the new code
