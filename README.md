@@ -211,6 +211,14 @@ Early-season analysis uses an unmixed prior season until five current-season gam
   Validation uses mocked APIs and Sheets only; production history has not been
   rewritten. Push, then run the engine and grader to apply the repairs live.
 
+### Player panel corrections (2026-11-11)
+
+The player panel corrections on 2026-11-11 let Home/Away and H2H mini charts
+grow to fit bars and labels without overlapping headings. L5/L10 hit counts
+use available games, capped at five/ten. Season scope and H2H calculations
+are unchanged. Frontend deployment and refresh only; no engine run required.
+Regression coverage includes one, three, nine and twelve available games.
+
 ### Static Pages deployment (2026-11-10)
 
 The root `.nojekyll` file disables Jekyll processing for this plain HTML/JS

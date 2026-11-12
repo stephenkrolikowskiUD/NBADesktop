@@ -50,6 +50,21 @@ function seed(status='READY'){
   };
 }
 (async()=>{
+  // Recent-game denominators reflect the loaded sample, not the window ceiling.
+  for(const count of [1,3,9,12]){
+    seed();
+    fixtures.Dashboard_Player_Stats=Array.from({length:count},(_,i)=>({...player,
+      GAME_DATE:new Date(clock-i*86400000).toISOString().slice(0,10),PTS:30,MIN:30}));
+    await api.loadAllData();
+    api.getState().player=player.PLAYER_NAME;api.getState().metric='PTS';api.getState().line='20.5';
+    api.render();
+    for(const window of [5,10]){
+      const n=Math.min(window,count);
+      assert.ok(app.innerHTML.includes(`<span class="hit-key">L${window}</span><span class="hit-val">${n}/${n}</span>`));
+    }
+  }
+  assert.match(html,/\.mini-bars-container\{[^}]*min-height:90px/);
+  assert.doesNotMatch(html.match(/\.mini-bar-wrap\{[^}]*\}/)[0],/height:100%/);
   if(process.env.NBA_CONTRACT_FIXTURE){
     const contract=JSON.parse(fs.readFileSync(process.env.NBA_CONTRACT_FIXTURE,'utf8'));
     fixtures=contract.ready;await api.loadAllData();assert.equal(api.getState().error,null);

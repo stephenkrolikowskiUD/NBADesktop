@@ -46,8 +46,8 @@ input::placeholder{color:#888}
 .split-row{display:flex;gap:8px}
 .split-card{flex:1;background:#1a1a1a;border-radius:10px;padding:12px}
 .split-title{color:#e5e7eb;font-size:10px;font-weight:600;margin-bottom:8px;display:block}
-.mini-bars-container{position:relative;height:70px;display:flex;gap:6px;align-items:flex-end}
-.mini-bar-wrap{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%}
+.mini-bars-container{position:relative;min-height:90px;display:flex;gap:6px;align-items:flex-end}
+.mini-bar-wrap{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end}
 .mini-bar{width:100%;border-radius:3px 3px 0 0;flex-shrink:0}
 .mini-bar-label{font-size:8px;color:#d1d5db;margin-top:2px}.mini-bar-val{font-size:8px;color:#fff;font-weight:600;margin-top:1px}
 .vegas-row{display:flex;justify-content:space-between;margin-bottom:4px}
@@ -1342,7 +1342,7 @@ function render(){
     <div class="section"><div class="card"><div class="card-title">⚡ Vegas</div><div class="vegas-row"><span class="vegas-key">${teamMatchup(pT.TEAM_ABBREVIATION,pT.TONIGHT_OPP)}</span><span style="color:#22c55e;font-size:12px;font-weight:600">${pT.SPREAD?`Spread: ${pT.SPREAD}`:"—"}</span></div><div class="vegas-row"><span class="vegas-key">Team Total</span><span class="vegas-val">${pT.IMPLIED_TOTAL||"—"}</span></div><div class="vegas-row"><span class="vegas-key">Opp Total</span><span class="vegas-val">${pT.OPP_IMPLIED_TOTAL||"—"}</span></div><div class="vegas-row"><span class="vegas-key">Game Total</span><span class="vegas-val">${pT.GAME_TOTAL||"—"}</span></div></div></div>
     <div class="section"><div class="card"><div class="card-title">🎰 ${bookLabel(prop)} Props — ${metric}</div>
       ${prop.DK_LINE?`<div class="dk-line">Line: ${prop.DK_LINE}</div><div class="dk-odds"><span style="color:#22c55e;font-size:12px">${overOdds?`Over: ${fmtOdds(overOdds)} (${(overImpl*100).toFixed(1)}%)`:"—"}</span><span style="color:#ef4444;font-size:12px">${underOdds?`Under: ${fmtOdds(underOdds)}`:"—"}</span></div>`:`<div class="no-data" style="margin-bottom:8px">No DK line</div>`}
-      ${lineNum&&pHasLogs?`<div class="hit-row" style="border-top:1px solid #333;padding-top:8px;margin-top:4px"><span class="hit-key">L5</span><span class="hit-val">${hL5}/5</span></div><div class="hit-row"><span class="hit-key">L10</span><span class="hit-val">${hL10}/10</span></div><div class="hit-row"><span class="hit-key">Season</span><span class="hit-val">${hS}/${allLogs.length} (${sRate!==null?(sRate*100).toFixed(0):"—"}%)${pushS>0?` · ${pushS} push`:""}</span></div>`:""}</div></div>
+      ${lineNum&&pHasLogs?`<div class="hit-row" style="border-top:1px solid #333;padding-top:8px;margin-top:4px"><span class="hit-key">L5</span><span class="hit-val">${hL5}/${Math.min(5,allLogs.length)}</span></div><div class="hit-row"><span class="hit-key">L10</span><span class="hit-val">${hL10}/${Math.min(10,allLogs.length)}</span></div><div class="hit-row"><span class="hit-key">Season</span><span class="hit-val">${hS}/${allLogs.length} (${sRate!==null?(sRate*100).toFixed(0):"—"}%)${pushS>0?` · ${pushS} push`:""}</span></div>`:""}</div></div>
     ${edge!==null&&edge>0?`<div class="section dash-full"><div class="confidence" style="background:#22c55e22;border:2px solid #22c55e"><div class="conf-label" style="color:#22c55e">+${(edge*100).toFixed(1)}pp historical gap vs book</div><div class="conf-edge">Observed hit rate: ${(sRate*100).toFixed(0)}% · DK implied: ${(overImpl*100).toFixed(0)}%</div></div></div>`:""}
     </div>
     ${pickBanner?`<div class="dash-bottom">${pickBanner}</div>`:""}
