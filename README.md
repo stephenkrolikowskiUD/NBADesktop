@@ -1,5 +1,13 @@
 # NBA DFS Dashboard
 
+## Player analysis polish (2026-11-13)
+
+- Mobile charts reserve space for bars and readable date/opponent labels, with horizontal scrolling contained inside the chart.
+- Phone controls use 16px text, the header can wrap, and split cards wrap on narrow screens.
+- H2H and home/away distinguish missing values from real zeroes, including incomplete combo metrics. Missing H2H no longer claims a first meeting.
+- Recent-chart captions show the displayed and loaded game counts. Split sample sizes are explicitly unavailable until provided by the feed.
+- Frontend only; no model, selection, grading, or engine changes. Deploy Pages and refresh. Dashboard regression tests cover zero/missing/combo split values; physical-device visual verification remains outstanding.
+
 A personal NBA player-prop research dashboard for turning daily player data, live prop markets, AI picks, and grader feedback into one mobile-first view.
 
 This repo is the GitHub Pages frontend for the NBA system. The engine writes data to Google Sheets, the grader closes the loop after games, and `index.html` reads the workbook through public Sheets CSV endpoints.

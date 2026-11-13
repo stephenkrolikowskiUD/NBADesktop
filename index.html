@@ -34,8 +34,8 @@ input::placeholder{color:#888}
 .stats-strip{background:#1a1a1a;padding:10px 16px;border-bottom:1px solid #2a2a2a;overflow-x:auto}
 .stats-strip-inner{display:flex;gap:16px;min-width:max-content}
 .stat-item{text-align:center;min-width:40px}.stat-label{color:#d1d5db;font-size:9px;margin-bottom:2px;font-weight:600}.stat-val{color:#eab308;font-weight:700;font-size:13px}
-.bar-chart{display:flex;align-items:flex-end;gap:3px;height:90px}
-.bar-wrap{flex:1;display:flex;flex-direction:column;align-items:center}
+.bar-chart{display:flex;align-items:flex-end;gap:5px;min-height:130px;overflow-x:auto;padding-top:8px}
+.bar-wrap{flex:1;min-width:30px;display:flex;flex-direction:column;align-items:center}
 .bar-val{font-size:7px;color:#e5e7eb;margin-bottom:1px;font-weight:600}
 .bar{width:100%;border-radius:3px 3px 0 0;transition:height .3s,background .3s}
 .bar-date{font-size:7px;color:#d1d5db;margin-top:2px}
@@ -44,7 +44,8 @@ input::placeholder{color:#888}
 .avg-card{flex:1;background:#1a1a1a;border-radius:8px;padding:10px 4px;text-align:center}
 .avg-label{color:#d1d5db;font-size:9px;margin-bottom:4px}.avg-val{font-weight:700;font-size:15px}
 .split-row{display:flex;gap:8px}
-.split-card{flex:1;background:#1a1a1a;border-radius:10px;padding:12px}
+.split-card{flex:1;min-width:0;background:#1a1a1a;border-radius:10px;padding:12px}
+.analysis-note{font-size:11px;line-height:1.5;color:#9ca3af;margin:8px 0}
 .split-title{color:#e5e7eb;font-size:10px;font-weight:600;margin-bottom:8px;display:block}
 .mini-bars-container{position:relative;min-height:90px;display:flex;gap:6px;align-items:flex-end}
 .mini-bar-wrap{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end}
@@ -216,6 +217,11 @@ tr.win td{background:#0f2a1a}tr.loss td{background:#2a0f0f}
 ::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-track{background:#111}::-webkit-scrollbar-thumb{background:#333;border-radius:4px}
 *{scrollbar-width:thin;scrollbar-color:#333 #111}
 @media(max-width:767px){
+  .header-top{flex-wrap:wrap;gap:8px}
+  .header-controls input,.header-controls select{font-size:16px}
+  .bar-val,.bar-date{font-size:10px;white-space:nowrap}
+  .mini-bar-label,.mini-bar-val{font-size:11px}
+  .split-row{flex-wrap:wrap}.split-card{flex-basis:145px}
   .risk-badge{display:inline-flex;align-items:center;justify-content:center;margin-left:0;padding:3px 7px;font-size:8px;line-height:1.1;white-space:nowrap}
   .bet-name,.ai-pick-player,.pick-player,.draft-name,.due-name{display:flex;flex-wrap:wrap;align-items:center;gap:4px}
   .risk-subnote{font-size:9px;line-height:1.35}
@@ -1127,6 +1133,16 @@ function renderCrossBookWarning(legs){const books=[...new Set((legs||[]).map(l=>
 
 function renderStatsView(){const w=st.statsTimeWindow||'last_30d';const rows=typeof getMemo==='function'?getMemo('statsRows:'+w,()=>st.pickPerformance||[]):(st.pickPerformance||[]);let html=renderTimeWindowSelector(w)+`<div class="card" style="margin:12px 16px">${esc(seasonForDate(easternTodayISO()))} research tracking · verified market provenance only. AI tiers are unvalidated; these results do not affect entry weights.</div>`;if(!rows.length)return html+`<div class="empty" style="padding:40px 20px;text-align:center">📊 New-season tracking is awaiting eligible settled picks. Previous-season results are excluded.</div>`;if(!statsRowsForWindow(rows,w).length)return html+`<div class="empty" style="padding:40px 20px;text-align:center">No Pick Performance rows for ${statsWindowLabel(w)}.</div>`;const updated=rows.map(r=>statField(r,'LAST_UPDATED')).filter(Boolean).sort().pop()||'';html+=renderDriftAlerts(rows);html+=renderOverallCard(rows,w);html+=renderTierBreakdown(rows,w);html+=renderLeanBreakdown(rows,w);html+=renderCLVSummary(rows,w);html+=renderPropTypeList(rows,w,'best');html+=renderPropTypeList(rows,w,'worst');html+=`<div class="timestamp">Data through ${esc(updated||'latest grader run')} · Updated daily after grader run</div>`;return html}
 
+// Missing split components are unknown, not zero (including combo markets).
+function analysisSplitValue(row,metric,field){
+  const values=(COMBO_STATS[metric]||[metric]).map(key=>row[field(key)]);
+  if(values.some(v=>v===null||v===undefined||String(v).trim()===''||!Number.isFinite(Number(v))))return null;
+  return values.reduce((sum,v)=>sum+Number(v),0);
+}
+function analysisSplitBars(items){
+  const max=Math.max(.1,...items.map(item=>item.v??0));
+  return items.map(item=>`<div class="mini-bar-wrap">${item.v===null?'':`<div class="mini-bar" style="height:${Math.max(0,item.v/max*60)}px;background:${item.c}"></div>`}<div class="mini-bar-label">${item.l}</div><div class="mini-bar-val">${item.v===null?'Unavailable':item.v.toFixed(1)}</div></div>`).join('');
+}
 function render(){
   const focus=saveFocus();
   const app=document.getElementById("app");
@@ -1145,9 +1161,9 @@ function render(){
   const l5Avg=getRollingVal(most,"L5_",metric);
   const lastGame=getMetricVal(most,metric);
 
-  const h2hVal=COMBO_STATS[metric]?COMBO_STATS[metric].reduce((s,k)=>s+toNum(pT[`H2H_${k}`]),0):toNum(pT[`H2H_${metric}`]);
-  const homeVal=COMBO_STATS[metric]?COMBO_STATS[metric].reduce((s,k)=>s+toNum(split[`${k}_Home`]),0):toNum(split[`${metric}_Home`]);
-  const awayVal=COMBO_STATS[metric]?COMBO_STATS[metric].reduce((s,k)=>s+toNum(split[`${k}_Away`]),0):toNum(split[`${metric}_Away`]);
+  const h2hVal=analysisSplitValue(pT,metric,k=>`H2H_${k}`);
+  const homeVal=analysisSplitValue(split,metric,k=>`${k}_Home`);
+  const awayVal=analysisSplitValue(split,metric,k=>`${k}_Away`);
 
   const hL5=lineNum?allLogs.slice(0,5).filter(p=>getMetricVal(p,metric)>lineNum).length:null;
   const hL10=lineNum?allLogs.slice(0,10).filter(p=>getMetricVal(p,metric)>lineNum).length:null;
@@ -1160,10 +1176,8 @@ function render(){
   const metricOpts=METRICS.map(m=>`<option value="${m}" ${m===metric?"selected":""}>${m}</option>`).join("");
   const bars=last10.map(g=>{const v=getMetricVal(g,metric),h=Math.max(4,(v/maxLog)*80);const ha=(g.MATCHUP||"").includes("vs.")?"vs":"@";return`<div class="bar-wrap"><div class="bar-val">${v}</div><div class="bar" style="height:${h}px;background:${barColor(v,lineNum)}"></div><div class="bar-date">${(g.GAME_DATE||"").slice(5)}</div><div class="bar-date" style="color:#d1d5db;margin-top:0">${ha}${g.GAME_OPP||""}</div></div>`}).join("");
   const avgs=[{l:"Season",v:seasAvg},{l:"L10",v:l10Avg},{l:"L5",v:l5Avg},{l:"Last",v:lastGame}].map(a=>`<div class="avg-card" style="border:1px solid ${lineNum&&a.v>=lineNum?"#22c55e44":lineNum?"#ef444433":"#333"}"><div class="avg-label">${a.l}</div><div class="avg-val" style="color:${avgColor(a.v,lineNum)}">${a.v.toFixed(1)}</div></div>`).join("");
-  let h2hBars=`<div class="no-data">1st Meeting</div>`;
-  if(h2hVal>0){const mx=Math.max(h2hVal,seasAvg,.1);h2hBars=[{l:"H2H",v:h2hVal,c:"#3b82f6"},{l:"Season",v:seasAvg,c:"#22c55e"}].map(b=>`<div class="mini-bar-wrap"><div class="mini-bar" style="height:${Math.max(4,(b.v/mx)*60)}px;background:${b.c}"></div><div class="mini-bar-label">${b.l}</div><div class="mini-bar-val">${b.v.toFixed(1)}</div></div>`).join("")}
-  let hrBars=`<div class="no-data">No data</div>`;
-  if(homeVal>0||awayVal>0){const mx=Math.max(homeVal,awayVal,.1);hrBars=[{l:"Home",v:homeVal,c:"#8b5cf6"},{l:"Away",v:awayVal,c:"#06b6d4"}].map(b=>`<div class="mini-bar-wrap"><div class="mini-bar" style="height:${Math.max(4,(b.v/mx)*60)}px;background:${b.c}"></div><div class="mini-bar-label">${b.l}</div><div class="mini-bar-val">${b.v.toFixed(1)}</div></div>`).join("")}
+  const h2hBars=analysisSplitBars([{l:'H2H',v:h2hVal,c:'#3b82f6'},{l:'Season',v:seasAvg,c:'#22c55e'}]);
+  const hrBars=analysisSplitBars([{l:'Home',v:homeVal,c:'#8b5cf6'},{l:'Away',v:awayVal,c:'#06b6d4'}]);
   const statStrip=["PTS","REB","AST","PRA","FG3M","STOCKS","UD_FP"].map(s=>`<div class="stat-item"><div class="stat-label">${s}</div><div class="stat-val">${(COMBO_STATS[s]?getRollingVal(most,"Seas_",s):toNum(most[`Seas_${s}`])).toFixed(1)}</div></div>`).join("");
   const lastUp=most.LAST_UPDATED||pT.LAST_UPDATED||"—";
 
@@ -1336,9 +1350,9 @@ function render(){
     ${earlyBanner}
     ${pHasLogs?`<div class="stats-strip"><div class="stats-strip-inner">${statStrip}</div></div>`:""}
     <div class="dash-grid">
-    ${pHasLogs?`<div class="section"><div class="label">Game Log — ${metric}</div><div class="bar-chart">${bars}</div>${lineNum?`<div class="line-indicator">Line: ${lineNum}</div>`:""}</div>`:""}
+    ${pHasLogs?`<div class="section"><div class="label">Game Log — ${metric}</div><p class="analysis-note">Latest ${last10.length} of ${allLogs.length} loaded analysis-season games. Full history in Log.</p><div class="bar-chart">${bars}</div>${lineNum?`<div class="line-indicator">Line: ${lineNum}</div>`:""}</div>`:""}
     ${pHasLogs?`<div class="section"><div class="label">Averages</div><div class="avg-cards">${avgs}</div></div>`:""}
-    ${pHasLogs?`<div class="section"><div class="split-row"><div class="split-card"><span class="split-title">H2H vs ${esc(pT.TONIGHT_OPP||"—")}</span><div class="mini-bars-container">${h2hBars}</div></div><div class="split-card"><span class="split-title">Home / Away</span><div class="mini-bars-container">${hrBars}</div></div></div></div>`:""}
+    ${pHasLogs?`<div class="section"><div class="split-row"><div class="split-card"><span class="split-title">H2H vs ${esc(pT.TONIGHT_OPP||"—")}</span><div class="mini-bars-container">${h2hBars}</div><p class="analysis-note">${h2hVal===null?'Opponent history unavailable.':'Feed average; sample size and history period unavailable.'}</p></div><div class="split-card"><span class="split-title">Home / Away</span><div class="mini-bars-container">${hrBars}</div><p class="analysis-note">Feed averages; split sample sizes unavailable.</p></div></div></div>`:""}
     <div class="section"><div class="card"><div class="card-title">⚡ Vegas</div><div class="vegas-row"><span class="vegas-key">${teamMatchup(pT.TEAM_ABBREVIATION,pT.TONIGHT_OPP)}</span><span style="color:#22c55e;font-size:12px;font-weight:600">${pT.SPREAD?`Spread: ${pT.SPREAD}`:"—"}</span></div><div class="vegas-row"><span class="vegas-key">Team Total</span><span class="vegas-val">${pT.IMPLIED_TOTAL||"—"}</span></div><div class="vegas-row"><span class="vegas-key">Opp Total</span><span class="vegas-val">${pT.OPP_IMPLIED_TOTAL||"—"}</span></div><div class="vegas-row"><span class="vegas-key">Game Total</span><span class="vegas-val">${pT.GAME_TOTAL||"—"}</span></div></div></div>
     <div class="section"><div class="card"><div class="card-title">🎰 ${bookLabel(prop)} Props — ${metric}</div>
       ${prop.DK_LINE?`<div class="dk-line">Line: ${prop.DK_LINE}</div><div class="dk-odds"><span style="color:#22c55e;font-size:12px">${overOdds?`Over: ${fmtOdds(overOdds)} (${(overImpl*100).toFixed(1)}%)`:"—"}</span><span style="color:#ef4444;font-size:12px">${underOdds?`Under: ${fmtOdds(underOdds)}`:"—"}</span></div>`:`<div class="no-data" style="margin-bottom:8px">No DK line</div>`}

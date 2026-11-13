@@ -36,6 +36,13 @@ const context=vm.createContext({
 });
 vm.runInContext(code+'\nglobalThis.api={evaluateFeed,loadAllData,searchDashPlayer,getPlayerLogs,renderHitRateCell,getStreaks,render,teamBadge,matchupBadges,getLockInfo,refreshGameLocks,getState:()=>st,easternTodayISO,seasonForDate,normalizePlayerName,getConvergenceBoard,aiAgreesWithBet,buildCandidatePool,entryFindProp,playerAvailability,getBestBets,scoreCandidate,currentPerformanceRows,performanceTabName,entryLatestPicks};',context);
 const api=context.api;
+assert.equal(vm.runInContext("analysisSplitValue({},'PTS',k=>'H2H_'+k)",context),null);
+assert.equal(vm.runInContext("analysisSplitValue({H2H_PTS:0},'PTS',k=>'H2H_'+k)",context),0);
+assert.equal(vm.runInContext("analysisSplitValue({H2H_REB:5},'RA',k=>'H2H_'+k)",context),null);
+assert.equal(vm.runInContext("analysisSplitValue({H2H_REB:5,H2H_AST:3},'RA',k=>'H2H_'+k)",context),8);
+assert.equal(vm.runInContext("analysisSplitValue({H2H_PTS:''},'PTS',k=>'H2H_'+k)",context),null);
+assert.match(vm.runInContext("analysisSplitBars([{l:'Home',v:null,c:'blue'}])",context),/Unavailable/);
+assert.match(vm.runInContext("analysisSplitBars([{l:'Away',v:0,c:'red'}])",context),/>0\.0</);
 const today=api.easternTodayISO();
 const stamp=new Date().toISOString();
 const base={SLATE_DATE:today,SEASON:api.seasonForDate(today),LAST_UPDATED:'2026-10-19 11:00:00 AM EDT',UPDATED_AT_UTC:stamp};
