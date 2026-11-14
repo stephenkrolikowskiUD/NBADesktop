@@ -728,7 +728,13 @@ print("\n📊 Cumulative Record (all graded picks):")
 ws_fresh = sh.worksheet('Daily_Picks')
 all_fresh = ws_fresh.get_all_records()
 df_all = pd.DataFrame(all_fresh)
-df_all = annotate(df_all, sh)
+df_all = annotate(df_all, sh, 'NBA')
+audit_columns = [c for c in ('DATE', 'RUN_ID', 'RUN_TIME', 'PUBLICATION_ID', 'player',
+    'prop_type', 'lean', 'line', 'COMMENCE_TIME', 'publication_cohort',
+    'publication_evidence_run_id', 'publication_evidence_finished_at',
+    'publication_evidence_reason') if c in df_all.columns]
+if not df_all.empty and not pick_perf_safe_upload(sh, 'Publication_Audit', df_all[audit_columns]):
+    raise RuntimeError('Could not publish publication evidence audit')
 
 if 'HIT' in df_all.columns:
     total_yes = len(df_all[df_all['HIT'] == 'YES'])

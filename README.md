@@ -2,11 +2,17 @@
 
 ## Publication evidence (2026-11-13)
 
+### Historical reconstruction
+
+The grader now reads Run_Log to classify older picks as RECONSTRUCTED_PREGAME_FEED when one matching engine run succeeded (OK/WARN, no error), logged a positive Daily_Picks write count, and finished before the stored game start. Matching uses run/publication ID first, then a unique explicit-timezone RUN_TIME interval for legacy rows. Ambiguous, missing, failed, or late evidence never becomes a pregame success. A failed or altered direct receipt cannot be rescued by reconstruction.
+
+Publication_Audit records each row's cohort, source run, completion time, and reason. This is inference from retained logs, not a claim that historical selections were read back or viewed. It does not rewrite Daily_Picks or Publication_Ledger, alter grades, or relax performance eligibility. Run the updated grader to reconstruct available history; no engine run or Odds API credits are required for this classification. Coverage depends on retained run logs and game start times, and has not yet been measured against live Sheets.
+
 The engine assigns each emitted pick a publication ID and verifies its saved player, market, side, line, captured price, and game start against Daily_Picks. After feed/status readback it appends a snapshot to Publication_Ledger and verifies that receipt. Failed verification fails the run and marks the slate failed.
 
-The grader reports publication_cohort separately: VERIFIED_PREGAME_FEED, UNVERIFIED_CAPTURE, and LATE_OR_UNVERIFIED. Stats shows these groups without relabeling the existing overall record. Research labels and selection rules are unchanged. This proves availability in the research feed, not a browser impression, dynamic shortlist selection, or predictive validation. Repeated publications are not independent bets; existing sport-specific performance eligibility/deduplication remains in effect.
+The grader reports publication_cohort separately: VERIFIED_PREGAME_FEED, RECONSTRUCTED_PREGAME_FEED, UNVERIFIED_CAPTURE, and LATE_OR_UNVERIFIED. Stats shows these groups without relabeling the existing overall record. Research labels and selection rules are unchanged. Direct receipts verify availability in the research feed; reconstructed rows infer it from successful run logs. Neither proves a browser impression, dynamic shortlist selection, or predictive validation. Repeated publications are not independent bets; existing sport-specific performance eligibility/deduplication remains in effect.
 
-Deployment: push the engine, grader, helper, and frontend together. The next engine run creates the ledger; the following grader run produces cohorts. Running only the grader cannot reconstruct historical publication evidence. No historical rows are retroactively marked verified. Missing ledger tabs classify existing captures as unverified; other ledger read errors stop grading rather than silently downgrade evidence.
+Deployment: push the helper, grader, and frontend updates together. The updated grader can reconstruct historical evidence from retained Run_Log records without rerunning the engine. The updated engine creates direct receipts going forward. Historical rows are never retroactively marked directly verified. Missing evidence leaves captures unverified; unexpected ledger or run-log read errors stop grading rather than silently downgrade evidence.
 
 Validation: offline publication fixtures cover readback mismatch, late publication, numeric round trips, immutable selection snapshots, and retry identity. Live Sheets publication and physical-device verification are still required after deployment.
 
