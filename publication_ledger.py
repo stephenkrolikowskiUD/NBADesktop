@@ -206,3 +206,26 @@ def annotate(frame, book, sport):
         frame[key] = [item[index] for item in evidence]
     return frame
 
+
+def comparison_report(frame, book, sport):
+    from comparison_reporting import report
+    import pandas as pd
+    receipts = {r.get("PUBLICATION_ID"): r for r in records(book)}
+    rows = []
+    for source in frame.to_dict("records"):
+        row = dict(source)
+        cohort_name = row.get("publication_cohort")
+        direct = cohort_name == "VERIFIED_PREGAME_FEED"
+        row["_report_evidence"] = ("DIRECT" if direct else "RECONSTRUCTED"
+            if cohort_name == "RECONSTRUCTED_PREGAME_FEED" else "")
+        row["_report_at"] = (receipts.get(row.get("PUBLICATION_ID"), {}).get("VERIFIED_AT_UTC", "")
+            if direct else row.get("publication_evidence_finished_at", ""))
+        row["_report_start"] = row.get("COMMENCE_TIME", "")
+        row["_report_game"] = row.get("EVENT_ID") or row.get("COMMENCE_TIME", "")
+        row["_report_player"] = str(row.get("player", "")).strip().casefold()
+        row["_report_surface"] = "RESEARCH_FEED"
+        row["_report_odds"] = row.get("ODDS") if sport == "NBA" else row.get("PICK_ODDS")
+        row["_report_book"] = row.get("BOOK") if sport == "NBA" else row.get("PICK_BOOK")
+        rows.append(row)
+    return report(pd.DataFrame(rows), sport)
+
