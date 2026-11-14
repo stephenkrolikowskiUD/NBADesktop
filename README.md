@@ -1,5 +1,9 @@
 # NBA DFS Dashboard
 
+### Compact slate banner (2026-11-13)
+
+Replaced the large slate status card with a slim top banner. Slate date, update time, and stale/limited/failed status remain visible; tap to expand the full explanation. Text can wrap on narrow screens rather than clipping warnings. Frontend only; no engine run needed.
+
 ## Player analysis polish (2026-11-13)
 
 - Mobile charts reserve space for bars and readable date/opponent labels, with horizontal scrolling contained inside the chart.

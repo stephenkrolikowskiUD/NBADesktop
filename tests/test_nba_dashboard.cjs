@@ -36,6 +36,12 @@ const context=vm.createContext({
 });
 vm.runInContext(code+'\nglobalThis.api={evaluateFeed,loadAllData,searchDashPlayer,getPlayerLogs,renderHitRateCell,getStreaks,render,teamBadge,matchupBadges,getLockInfo,refreshGameLocks,getState:()=>st,easternTodayISO,seasonForDate,normalizePlayerName,getConvergenceBoard,aiAgreesWithBet,buildCandidatePool,entryFindProp,playerAvailability,getBestBets,scoreCandidate,currentPerformanceRows,performanceTabName,entryLatestPicks};',context);
 const api=context.api;
+const banner=vm.runInContext("renderSlateBanner({usable:true,status:'DEGRADED',aging:true,slateDate:'2026-11-13',text:'Details <safe>'})",context);
+assert.match(banner,/Limited data.*Stale prices/);
+assert.match(banner,/Details &lt;safe&gt;/);
+assert.match(banner,/<details/);
+assert.doesNotMatch(banner,/<details[^>]* open/);
+assert.match(vm.runInContext("renderSlateBanner({usable:false,status:'FAILED'})",context),/Engine failed/);
 assert.equal(vm.runInContext("analysisSplitValue({},'PTS',k=>'H2H_'+k)",context),null);
 assert.equal(vm.runInContext("analysisSplitValue({H2H_PTS:0},'PTS',k=>'H2H_'+k)",context),0);
 assert.equal(vm.runInContext("analysisSplitValue({H2H_REB:5},'RA',k=>'H2H_'+k)",context),null);

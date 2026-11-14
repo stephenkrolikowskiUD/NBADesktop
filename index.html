@@ -46,6 +46,10 @@ input::placeholder{color:#888}
 .split-row{display:flex;gap:8px}
 .split-card{flex:1;min-width:0;background:#1a1a1a;border-radius:10px;padding:12px}
 .analysis-note{font-size:11px;line-height:1.5;color:#9ca3af;margin:8px 0}
+.slate-banner{border-bottom:1px solid #333;background:#1a1a1a;color:#cbd5e1;font-size:12px;padding:8px 16px;line-height:1.5}
+.slate-banner summary{cursor:pointer;overflow-wrap:anywhere}
+.slate-banner p{margin-top:8px;max-width:900px}
+.slate-banner.warning summary{color:#fbbf24}
 .split-title{color:#e5e7eb;font-size:10px;font-weight:600;margin-bottom:8px;display:block}
 .mini-bars-container{position:relative;min-height:90px;display:flex;gap:6px;align-items:flex-end}
 .mini-bar-wrap{flex:1;min-width:0;display:flex;flex-direction:column;align-items:center;justify-content:flex-end}
@@ -584,7 +588,7 @@ function evaluateFeed(rows,now=Date.now(),today=easternTodayISO()){
   const status=rows?.[0],slate=String(status?.SLATE_DATE||"");
   const offset=(Date.parse(slate+"T00:00:00Z")-Date.parse(today+"T00:00:00Z"))/86400000;
   if(!status||!/^\d{4}-\d{2}-\d{2}$/.test(slate)||!Number.isFinite(offset)||offset<0||offset>7)return {usable:false,text:"NBA feed is awaiting a verified current or upcoming slate. Previous slate hidden."};
-  const context={slateDate:slate};
+  const context={slateDate:slate,status:String(status.STATUS||'')};
   const rawStamp=String(status.UPDATED_AT_UTC||"");
   const stamp=/^\d{4}-\d{2}-\d{2}T.*(?:Z|[+-]\d{2}:\d{2})$/.test(rawStamp)?Date.parse(rawStamp):NaN;
   if(!Number.isFinite(stamp)||stamp>now+5*60*1000)return {...context,usable:false,text:"NBA feed timestamp could not be verified. Run the engine to publish a dated snapshot."};
@@ -603,6 +607,15 @@ function evaluateFeed(rows,now=Date.now(),today=easternTodayISO()){
   return {...dated,usable:true,text:`Slate ${slate}. ${published}${warning}${detail}`};
 }
 
+function renderSlateBanner(feed){
+  if(!feed)return '';
+  const labels={READY:'Ready',NO_GAMES:'No games',FAILED:'Engine failed',WARMUP:'History building',AWAITING_PROPS:'Waiting for markets',DEGRADED:'Limited data'};
+  const label=feed.usable?(labels[feed.status]||'Ready'):(feed.status==='NO_GAMES'?'No games':feed.status==='FAILED'?'Engine failed':'Live data unavailable');
+  const stamp=Date.parse(feed.updatedAtUTC||'');
+  const time=Number.isFinite(stamp)?new Date(stamp).toLocaleString('en-US',{timeZone:'America/New_York',month:'short',day:'numeric',hour:'numeric',minute:'2-digit',timeZoneName:'short'}):'unverified';
+  const warning=!feed.usable||feed.aging||feed.status==='DEGRADED'||feed.status==='AWAITING_PROPS';
+  return `<details class="slate-banner${warning?' warning':''}"><summary>${esc(label)}${feed.aging?' · Stale prices':''}${feed.slateDate?' · Slate '+esc(feed.slateDate):''} · Updated ${esc(time)}</summary><p>${esc(feed.text||'')}</p></details>`;
+}
 function hasLogs(name){ensureDerived();return (derived.logsByName.get(normalizePlayerName(name))||[]).length>0}
 
 function getPlayerLogs(name){
@@ -1331,7 +1344,7 @@ function render(){
   // ═══ ASSEMBLE ═══
   const showH=activeTab==="dashboard"||activeTab==="gamelog";
   app.innerHTML=`
-  ${st.feedStatus?`<div role="status" class="card" style="margin:12px 16px;color:#cbd5e1">${esc(st.feedStatus.text)}</div>`:""}
+  ${renderSlateBanner(st.feedStatus)}
   <div style="margin:8px 16px;color:#9ca3af;font-size:11px">Research mode · AI tiers are unvalidated. Historical rates describe past games, not estimated win probabilities.</div>
   <div class="header"><div class="header-top"><div class="header-title">🏀 NBA DFS Dashboard</div><div style="display:flex;gap:8px"><button class="theme-btn" id="themeBtn">${st.theme==="light"?"🌙 Dark":"☀️ Light"}</button><button class="refresh-btn" id="refreshBtn">↻ Refresh</button></div></div>
     <div class="top-nav"><button class="tab-btn ${activeTab==="dashboard"?"active":""}" onclick="switchTab('dashboard')">📊 Dash</button><button class="tab-btn ${activeTab==="gamelog"?"active":""}" onclick="switchTab('gamelog')">📋 Log</button><button class="tab-btn ${activeTab==="picks"?"active":""}" onclick="switchTab('picks')">🔥 Picks</button><button class="tab-btn ${activeTab==="stats"?"active":""}" onclick="switchTab('stats')">📊 Stats</button><button class="tab-btn ${activeTab==="entry"?"active":""}" onclick="switchTab('entry')">🎟️ Game Entry</button><button class="tab-btn ${activeTab==="method"?"active":""}" onclick="switchTab('method')">ℹ️ Info</button></div>
