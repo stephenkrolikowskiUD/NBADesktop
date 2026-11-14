@@ -135,9 +135,6 @@ def reconstruct(row, runs, sport):
                (str(r.get("run_id", "")), str(r.get("publication_run_id", "")))]
     basis = "run ID"
     if not matched:
-        # A known publication ID must not be reassigned to a different run.
-        if run_id and any(str(r.get("publication_run_id", "")).strip() for r in candidates):
-            return "UNVERIFIED_CAPTURE", "", "", "No matching run ID"
         try:
             pick_time = log_timestamp(row.get("RUN_TIME", ""))
         except ValueError:
@@ -157,6 +154,11 @@ def reconstruct(row, runs, sport):
             except (ValueError, KeyError):
                 continue
         basis = "unique run-time interval"
+        # Legacy logs did not link their engine ID to the pick-generation ID.
+        # Check all overlapping runs before allowing that legacy fallback;
+        # a newer run with a conflicting linked ID must never be reassigned.
+        if run_id and any(str(r.get("publication_run_id", "")).strip() for r in matched):
+            return "UNVERIFIED_CAPTURE", "", "", "No matching run ID"
     if len(matched) != 1:
         return "UNVERIFIED_CAPTURE", "", "", "Missing or ambiguous engine run"
     run = matched[0]

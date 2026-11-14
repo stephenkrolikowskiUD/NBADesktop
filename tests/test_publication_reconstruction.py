@@ -43,6 +43,26 @@ class ReconstructionTests(unittest.TestCase):
         self.assertEqual(self.result(dict(self.row,RUN_ID="another")), "UNVERIFIED_CAPTURE")
     def test_missing_game_time(self):
         self.assertEqual(self.result(dict(self.row,COMMENCE_TIME="")), "UNVERIFIED_CAPTURE")
+    def test_legacy_id_with_unrelated_newer_linked_run(self):
+        legacy = dict(self.run, publication_run_id="")
+        newer = dict(self.run, run_id="newer", publication_run_id="newer-publication",
+                     started_at="2026-11-14 09:00:00 EST",
+                     finished_at="2026-11-14 09:10:00 EST")
+        self.assertEqual(self.result(runs=[legacy, newer]), "RECONSTRUCTED_PREGAME_FEED")
+
+    def test_legacy_fallback_does_not_ignore_overlaps(self):
+        legacy = dict(self.run, publication_run_id="")
+        for extra in (dict(legacy, run_id="failed", status="FAIL"),
+                      dict(self.run, publication_run_id="conflicting")):
+            with self.subTest(extra=extra):
+                self.assertEqual(self.result(runs=[legacy, extra]), "UNVERIFIED_CAPTURE")
+
+    def test_legacy_fallback_retains_write_and_timing_checks(self):
+        legacy = dict(self.run, publication_run_id="")
+        for changes in ({"status": "FAIL"}, {"rows_written": "{}"}):
+            self.assertEqual(self.result(runs=[dict(legacy, **changes)]), "UNVERIFIED_CAPTURE")
+        self.assertEqual(self.result(runs=[dict(legacy, finished_at="2026-11-13 19:01:00 EST")]),
+                         "LATE_OR_UNVERIFIED")
     def test_dst_offset(self):
         row = dict(self.row,COMMENCE_TIME="2026-10-30T13:30:00Z")
         run = dict(self.run,started_at="2026-10-30 09:00:00 EDT",finished_at="2026-10-30 09:10:00 EDT")

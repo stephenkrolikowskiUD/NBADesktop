@@ -4,6 +4,10 @@
 
 ### Historical reconstruction
 
+Legacy ID matching correction: older pick-generation IDs differ from engine run IDs, and older logs have no publication_run_id link. Unrelated newer linked runs no longer disable timestamp reconstruction for that history. The fallback checks all overlapping engine runs, requires a unique interval, and rejects a conflicting linked ID. Successful picks writes and pregame completion remain mandatory. Direct receipt failures cannot be rescued.
+
+A read-only audit of the November 13 retained data found 360 previously unmatched rows eligible for this legacy reconstruction; these are not necessarily settled picks or independent bets. Push this correction and rerun the NBA grader, then refresh the dashboard. No engine run or Odds API credits are required. Grades, selection policy, and directly verified publication records are unchanged.
+
 The grader now reads Run_Log to classify older picks as RECONSTRUCTED_PREGAME_FEED when one matching engine run succeeded (OK/WARN, no error), logged a positive Daily_Picks write count, and finished before the stored game start. Matching uses run/publication ID first, then a unique explicit-timezone RUN_TIME interval for legacy rows. Ambiguous, missing, failed, or late evidence never becomes a pregame success. A failed or altered direct receipt cannot be rescued by reconstruction.
 
 Publication_Audit records each row's cohort, source run, completion time, and reason. This is inference from retained logs, not a claim that historical selections were read back or viewed. It does not rewrite Daily_Picks or Publication_Ledger, alter grades, or relax performance eligibility. Run the updated grader to reconstruct available history; no engine run or Odds API credits are required for this classification. Coverage depends on retained run logs and game start times, and has not yet been measured against live Sheets.
