@@ -209,5 +209,7 @@ function seed(status='READY'){
   const board=api.getConvergenceBoard();assert.equal(board.length,1);assert.equal(board[0].sourceCount,3);
   assert.equal(api.aiAgreesWithBet({player:'Example Player',prop_type:'PTS',lean:'OVER',line:21.5},{name:'Example Player',metric:'PTS',lean:'OVER',dkLine:20.5}),false);
   assert.equal(fs.readFileSync('index.html','utf8'),html,'HTML and compatibility source must stay in sync');
+  assert.match(vm.runInContext("renderOverallCard([], 'all_time')",context),/Older records are not backfilled/);
+  assert.match(vm.runInContext("renderOverallCard([{TIME_WINDOW:'all_time',DIMENSION_TYPE:'publication_cohort',DIMENSION_VALUE:'VERIFIED_PREGAME_FEED',N_PICKS_DECISIVE:2,HIT_RATE:0.5,ROI_PER_PICK:-5}], 'all_time')",context),/Verified pregame feed.*2 decisive.*-5.0%/);
   console.log('Dashboard regression checks passed: current/stale/missing/updating/off-day/warmup feeds, season isolation, pick dates, deduplication, and empty-state rendering.');
 })().catch(e=>{console.error(e);process.exitCode=1});

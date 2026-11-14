@@ -19,6 +19,7 @@ from nba_api.stats.endpoints import leaguegamelog, leaguedashteamstats, scoreboa
 from nba_api.stats.static import teams
 from run_logger import RunLogger
 from nba_dispatch import guard_run, verify_publication
+from publication_ledger import identify, publish_receipts
 from nba_security import redact, register_secret, safe_print as print
 from nba_markets import is_pregame, fetch_batch
 import nba_sources
@@ -2448,6 +2449,7 @@ if not df_picks.empty:
         runlog.picks_generated = len(df_picks)
     except Exception:
         pass
+    df_picks = pd.DataFrame(identify(df_picks.to_dict('records'), RUN_ID, 'NBA'))
     append_upload('Daily_Picks', df_picks)
     # A successful API call alone does not prove that the board can load its picks.
     published = sh.worksheet('Daily_Picks').get_all_records()
@@ -2465,6 +2467,13 @@ else:
 final_status = 'WARMUP' if df_tonight_sheet.empty else ('DEGRADED' if PUBLICATION_WARNINGS else ('READY' if not df_props.empty else 'AWAITING_PROPS'))
 publish_status(final_status)
 verify_publication(sh, runlog, today_str, RUN_ID, final_status)
+if not df_picks.empty:
+    try:
+        publish_receipts(sh, df_picks.to_dict('records'), 'NBA')
+    except Exception as error:
+        runlog.fail(error)
+        publish_status('FAILED')
+        raise
 
 print("\n" + "=" * 60)
 print("🏀 NBA ENGINE v8.5 — RUN COMPLETE")

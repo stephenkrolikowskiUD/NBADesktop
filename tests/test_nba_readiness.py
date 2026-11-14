@@ -33,6 +33,8 @@ class Sheet:
         self.clear_calls = []
     def get_all_values(self):
         return self.rows
+    def row_values(self, number):
+        return self.rows[number - 1] if len(self.rows) >= number else []
     def get_all_records(self):
         return [dict(zip(self.rows[0], row)) for row in self.rows[1:]] if self.rows else []
     def resize(self, rows, cols):
