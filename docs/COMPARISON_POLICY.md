@@ -2,7 +2,7 @@
 
 Policy ID: first-pregame-selection-v1
 
-NBA, NHL and NFL graders produce Comparison_Performance and Comparison_Audit using the same comparison_reporting.py implementation. Existing Pick_Performance/dashboard headline reports remain sport-specific; they are NOT relabeled as standardized comparisons.
+NBA, NHL and NFL graders produce Comparison_Performance and Comparison_Audit using the same comparison_reporting.py implementation. Dashboard performance pages now read Comparison_Performance. Legacy Pick_Performance data remains available for existing internal consumers but is not mixed into the displayed comparison totals.
 
 ## Counting rules
 
@@ -27,5 +27,5 @@ This comparison policy measures recorded pregame selections, not predictive vali
 
 Push each repository and run its grader, then inspect Comparison_Performance and Comparison_Audit in each Google Sheet. No engine run or Odds API calls are required. SOURCE_ROW refers to the source Daily_Picks sheet row for that snapshot. Empty outputs replace stale comparison tabs.
 
-The common report is additive. Existing dashboard headlines retain their existing policy until a separate UI migration explicitly switches their data source and labels. Use Comparison_Performance, not those legacy headlines, for cross-sport comparisons.
+The dashboard performance page displays the common report, including evidence groups and explicit surface labels. Missing or inconsistent reports show an unavailable state, never legacy totals or assumed zero returns. Legacy market/tier/CLV breakdowns are not displayed beneath standardized totals because they describe a different population. No source grades were changed. Refresh the deployed page after pushing the frontend changes; existing comparison tabs require no additional engine or grader run.
 
