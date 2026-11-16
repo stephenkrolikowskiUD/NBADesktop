@@ -730,8 +730,8 @@ all_fresh = ws_fresh.get_all_records()
 df_all = pd.DataFrame(all_fresh)
 df_all = annotate(df_all, sh, 'NBA')
 from publication_ledger import comparison_report
-comparison, comparison_audit = comparison_report(df_all, sh, 'NBA')
-for tab, data in (('Comparison_Performance', comparison), ('Comparison_Audit', comparison_audit)):
+comparison, comparison_audit, comparison_selections = comparison_report(df_all, sh, 'NBA', include_selections=True)
+for tab, data in (('Comparison_Selections', comparison_selections), ('Comparison_Performance', comparison), ('Comparison_Audit', comparison_audit)):
     if not pick_perf_safe_upload(sh, tab, data):
         raise RuntimeError('Could not publish ' + tab)
 audit_columns = [c for c in ('DATE', 'RUN_ID', 'RUN_TIME', 'PUBLICATION_ID', 'player',

@@ -1175,7 +1175,47 @@ function renderComparisonReport(rows,window,sport,surface){
   const labels={DIRECT:'Verified publication receipt',RECONSTRUCTED:'Reconstructed pregame feed',RECORDED_PUBLICATION:'Recorded board publication'};
   return intro+'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:20px;margin:24px 0">'+metrics.map(([name,value])=>'<div><div>'+name+'</div><strong style="font-size:1.6rem">'+escape(value)+'</strong></div>').join('')+'</div><p>'+count('N_HITS')+' wins · '+count('N_MISSES')+' losses · '+count('N_PUSHES')+' pushes. '+(settled-count('N_PRICED'))+' settled selections lack a valid captured price. Pushes return the stake; DNPs do not count toward hit rate or return.</p><h3>Publication evidence</h3>'+evidence.map(r=>'<p><strong>'+escape(labels[r.EVIDENCE]||r.EVIDENCE)+':</strong> '+escape(r.N_SELECTED)+' selections · '+format(number(r,'HIT_RATE'),'%',100)+' hit rate · '+format(number(r,'ROI_PCT'),'%')+' return</p>').join('')+'<p>Evidence groups partition the total; do not add them to it. Feed publication is not proof of shortlist placement or viewing. Same-game selections can be correlated.</p></section>';
 }
-function renderStatsView(){const w=st.statsTimeWindow||'last_30d';return renderTimeWindowSelector(w)+renderComparisonReport(st.comparisonPerformance||[],w,'NBA','RESEARCH_FEED');}
+function renderSelectionAnalysis(rows,totals,window,today){
+  const e=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const days={last_7d:7,last_30d:30,last_90d:90}[window];
+  const cutoff=new Date(today+'T12:00:00Z');if(days)cutoff.setUTCDate(cutoff.getUTCDate()-days+1);
+  const lower=days?cutoff.toISOString().slice(0,10):'';
+  const selected=(rows||[]).filter(r=>r.POLICY==='first-pregame-selection-v1'&&r.SPORT==='NBA'&&r.SURFACE==='RESEARCH_FEED'&&r.GAME_DATE>=lower&&r.GAME_DATE<=today);
+  const summary=rs=>rs.reduce((a,r)=>{
+    a.n++;const result=['YES','NO','PUSH','DNP'].includes(r.RESULT)?r.RESULT:'PENDING';a[result]++;
+    const odds=Number(r.ODDS);if(['YES','NO','PUSH'].includes(result)&&Number.isFinite(odds)&&Math.abs(odds)>=100&&String(r.BOOK||'').trim()){
+      a.priced++;a.units+=result==='YES'?(odds<0?100/Math.abs(odds):odds/100):result==='NO'?-1:0;
+      a.decimal+=odds<0?1+100/Math.abs(odds):1+odds/100;
+    }return a;
+  },{n:0,YES:0,NO:0,PUSH:0,DNP:0,PENDING:0,priced:0,units:0,decimal:0});
+  const headline=(totals||[]).filter(r=>r.POLICY==='first-pregame-selection-v1'&&r.SPORT==='NBA'&&r.SURFACE==='RESEARCH_FEED'&&r.EVIDENCE==='ALL'&&r.TIME_WINDOW===window);
+  const s=summary(selected), t=headline[0];
+  const fields={n:'N_SELECTED',YES:'N_HITS',NO:'N_MISSES',PUSH:'N_PUSHES',DNP:'N_DNP',PENDING:'N_PENDING',priced:'N_PRICED'};
+  const reconciled=headline.length===1&&Object.entries(fields).every(([k,v])=>Number(t[v])===s[k])&&Math.abs(Number(t.NET_UNITS)-s.units)<0.001;
+  const open='<section class="card" style="margin:16px;padding:20px;min-width:0">';
+  if(!reconciled)return open+'<h2>Performance breakdowns</h2><p role="status">Selection details are unavailable or do not match the headline yet. Run the updated grader, then refresh. Legacy results are not substituted.</p></section>';
+  const table=(headers,body)=>'<div style="overflow-x:auto;max-width:100%"><table><thead><tr>'+headers.map(h=>'<th>'+e(h)+'</th>').join('')+'</tr></thead><tbody>'+body.map(row=>'<tr>'+row.map(v=>'<td>'+e(v)+'</td>').join('')+'</tr>').join('')+'</tbody></table></div>';
+  const grouped=(title,key)=>{
+    const groups=new Map();selected.forEach(r=>{const k=key(r);if(!groups.has(k))groups.set(k,[]);groups.get(k).push(r);});
+    const body=[...groups].sort(([a],[b])=>a.localeCompare(b)).map(([k,rs])=>{const a=summary(rs),n=a.YES+a.NO;return [k,a.n,`${a.YES}-${a.NO}-${a.PUSH}`,n?(100*a.YES/n).toFixed(1)+'%':'—',a.priced,a.priced?(100*a.units/a.priced).toFixed(1)+'%':'—',a.priced?a.units.toFixed(2):'—',a.priced?(a.decimal/a.priced).toFixed(2):'—',a.PENDING+' / '+a.DNP,n<30?'Small sample':''];});
+    return '<h3 style="margin-top:24px">'+e(title)+'</h3>'+table(['Group','Selections','W-L-P','Hit rate','Priced','Return','Net units','Avg decimal odds','Pending / DNP','Sample'],body);
+  };
+  const week=r=>{const d=new Date(r.GAME_DATE+'T12:00:00Z');d.setUTCDate(d.getUTCDate()-(d.getUTCDay()+6)%7);return d.toISOString().slice(0,10);};
+  let html=open+'<h2>Where results come from</h2><p>Same first selections as the headline. Average odds cover priced, settled picks. Small samples are descriptive, not a reason to reverse a pick.</p>';
+  html+=grouped('Market × direction',r=>r.MARKET+' · '+r.SIDE);
+  html+=grouped('Weekly results · Monday start',week);
+  html+=grouped('Model versions',r=>r.MODEL_VERSION||'Unrecorded');
+  html+='<details style="margin-top:24px"><summary>Individual pick history · '+selected.length+' selections</summary>';
+  html+=table(['Game date','Player','Market','Side','Line','Entry odds','Book','Actual','Result','Published at','Model'],[...selected].sort((a,b)=>b.GAME_DATE.localeCompare(a.GAME_DATE)).map(r=>[r.GAME_DATE,r.PLAYER,r.MARKET,r.SIDE,r.LINE,r.ODDS,r.BOOK,r.ACTUAL,r.RESULT||'PENDING',r.PUBLISHED_AT,r.MODEL_VERSION||'Unrecorded']));
+  return html+'</details></section>';
+}
+function renderStatsView(){
+  const w=st.statsTimeWindow||'last_30d';
+  let report=renderComparisonReport(st.comparisonPerformance||[],w,'NBA','RESEARCH_FEED');
+  report=report.replace('<p>One pregame selection','<details><summary>How results are counted</summary><p>One pregame selection').replace('not a shared season across sports.</p>','not a shared season across sports.</p></details>');
+  report=report.replace('<h3>Publication evidence</h3>','<details><summary>Publication evidence</summary>').replace('Same-game selections can be correlated.</p>','Same-game selections can be correlated.</p></details>');
+  return renderTimeWindowSelector(w)+report+renderSelectionAnalysis(st.comparisonSelections||[],st.comparisonPerformance||[],w,easternTodayISO());
+}
 function renderStatsViewLegacy(){const w=st.statsTimeWindow||'last_30d';const rows=typeof getMemo==='function'?getMemo('statsRows:'+w,()=>st.pickPerformance||[]):(st.pickPerformance||[]);let html=renderTimeWindowSelector(w)+`<div class="card" style="margin:12px 16px">${esc(seasonForDate(easternTodayISO()))} research tracking · verified market provenance only. AI tiers are unvalidated; these results do not affect entry weights.</div>`;if(!rows.length)return html+`<div class="empty" style="padding:40px 20px;text-align:center">📊 New-season tracking is awaiting eligible settled picks. Previous-season results are excluded.</div>`;if(!statsRowsForWindow(rows,w).length)return html+`<div class="empty" style="padding:40px 20px;text-align:center">No Pick Performance rows for ${statsWindowLabel(w)}.</div>`;const updated=rows.map(r=>statField(r,'LAST_UPDATED')).filter(Boolean).sort().pop()||'';html+=renderDriftAlerts(rows);html+=renderOverallCard(rows,w);html+=renderTierBreakdown(rows,w);html+=renderLeanBreakdown(rows,w);html+=renderCLVSummary(rows,w);html+=renderPropTypeList(rows,w,'best');html+=renderPropTypeList(rows,w,'worst');html+=`<div class="timestamp">Data through ${esc(updated||'latest grader run')} · Updated daily after grader run</div>`;return html}
 
 // Missing split components are unknown, not zero (including combo markets).
@@ -1450,6 +1490,7 @@ function loadAllData(){
   return fetchSheet("NBA_Status").then(status=>Promise.all([fetchSheet("Tonights_Opponent").catch(()=>null),fetchSheet("Dashboard_Player_Stats").catch(()=>null),fetchSheet("DK_Player_Props").catch(()=>[]),fetchSheet("Home_Away_Splits").catch(()=>[]),fetchSheet("Daily_Picks").catch(()=>[]),fetchSheet("Teammate_Correlations").catch(()=>[]),fetchSheet(performanceTabName()).catch(()=>[]),fetchSheet(performanceTabName()+"_Snapshots").catch(()=>[])]).then(([tonight,stats,props,splits,picks,correlations,performance,snapshots])=>[tonight,stats,props,splits,picks,correlations,status,performance,snapshots]))
   .then(async ([tonight,stats,props,splits,picks,correlations,status,pickPerformance,pickPerformanceSnaps])=>{
     st.comparisonPerformance=normalizeKeys(cleanRows(await fetchSheet("Comparison_Performance").catch(()=>[])));
+    st.comparisonSelections=normalizeKeys(cleanRows(await fetchSheet("Comparison_Selections").catch(()=>[])));
     const after=await fetchSheet("NBA_Status");
     const run=status?.[0]?.RUN_ID;
     st.feedStatus=evaluateFeed(normalizeKeys(cleanRows(status)));

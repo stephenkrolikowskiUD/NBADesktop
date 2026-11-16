@@ -33,7 +33,7 @@ def instant(value):
     except ValueError:
         return None
 
-def report(frame, sport, today=None):
+def report(frame, sport, today=None, include_selections=False):
     """Adapters supply evidence, surface, publication/start times and identity."""
     today = today or datetime.now(ET).date()
     audit, candidates = [], []
@@ -95,6 +95,20 @@ def report(frame, sport, today=None):
             output.append(dict(zip(COLUMNS, [POLICY, sport, surface, evidence, window, len(rows),
                 counts["YES"], counts["NO"], counts["PUSH"], counts["DNP"], counts["PENDING"], priced,
                 counts["YES"]/decisive if decisive else None, profit, 100*profit/priced if priced else None])))
-    return pd.DataFrame(output, columns=COLUMNS), pd.DataFrame(audit, columns=[
-        "SOURCE_ROW", "POLICY", "SPORT", "STATUS", "EVIDENCE", "SURFACE"])
+    result = (pd.DataFrame(output, columns=COLUMNS), pd.DataFrame(audit, columns=[
+        "SOURCE_ROW", "POLICY", "SPORT", "STATUS", "EVIDENCE", "SURFACE"]))
+    if not include_selections:
+        return result
+    details = []
+    for day, row, item in selected:
+        details.append(dict(POLICY=POLICY, SPORT=sport, SURFACE=item['SURFACE'],
+            EVIDENCE=item['EVIDENCE'], SOURCE_ROW=item['SOURCE_ROW'], GAME_DATE=day.isoformat(),
+            GAME_ID=clean(row.get('_report_game')), PLAYER=clean(row.get('player')),
+            MARKET=clean(row.get('prop_type')).upper(), SIDE=clean(row.get('lean')).upper(),
+            LINE=row.get('line'), ODDS=row.get('_report_odds'), BOOK=clean(row.get('_report_book')),
+            RESULT=clean(row.get('HIT')).upper(), ACTUAL=row.get('ACTUAL_STAT', ''),
+            PUBLISHED_AT=row.get('_report_at'), MODEL_VERSION=clean(row.get('MODEL_VERSION')) or 'Unrecorded'))
+    columns = ['POLICY','SPORT','SURFACE','EVIDENCE','SOURCE_ROW','GAME_DATE','GAME_ID',
+        'PLAYER','MARKET','SIDE','LINE','ODDS','BOOK','RESULT','ACTUAL','PUBLISHED_AT','MODEL_VERSION']
+    return (*result, pd.DataFrame(details, columns=columns))
 

@@ -207,7 +207,7 @@ def annotate(frame, book, sport):
     return frame
 
 
-def comparison_report(frame, book, sport):
+def comparison_report(frame, book, sport, include_selections=False):
     from comparison_reporting import report
     import pandas as pd
     receipts = {r.get("PUBLICATION_ID"): r for r in records(book)}
@@ -227,5 +227,5 @@ def comparison_report(frame, book, sport):
         row["_report_odds"] = row.get("ODDS") if sport == "NBA" else row.get("PICK_ODDS")
         row["_report_book"] = row.get("BOOK") if sport == "NBA" else row.get("PICK_BOOK")
         rows.append(row)
-    return report(pd.DataFrame(rows), sport)
+    return report(pd.DataFrame(rows), sport, include_selections=include_selections)
 

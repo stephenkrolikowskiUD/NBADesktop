@@ -52,6 +52,24 @@ class ComparisonTests(unittest.TestCase):
         self.assertIn("POLICY", result.columns)
         self.assertIn("STATUS", audit.columns)
 
+    def test_selection_export_retains_first_price_and_model(self):
+        first = self.row(player="Example", MODEL_VERSION="v1", ACTUAL_STAT=24)
+        later = self.row(player="Example", MODEL_VERSION="v2", line=25.5,
+                         _report_at="2026-11-13T15:00:00Z", _report_odds=120)
+        totals, audit, selections = report(pd.DataFrame([later, first]), "NBA",
+            date(2026,11,13), include_selections=True)
+        self.assertEqual(len(selections), 1)
+        self.assertEqual(selections.iloc[0].MODEL_VERSION, "v1")
+        self.assertEqual(selections.iloc[0].ODDS, -110)
+        self.assertEqual(selections.iloc[0].ACTUAL, 24)
+        self.assertEqual(selections.iloc[0].SOURCE_ROW, 3)
+        self.assertEqual(selections.iloc[0].GAME_DATE, "2026-11-13")
+        self.assertEqual(totals.iloc[0].N_SELECTED, len(selections))
+
+    def test_empty_selection_export_has_schema(self):
+        _, _, selections = report(pd.DataFrame(), "NBA", include_selections=True)
+        self.assertIn("PUBLISHED_AT", selections.columns)
+
     def test_research_adapter_uses_receipt_time(self):
         from unittest.mock import patch
         from publication_ledger import comparison_report

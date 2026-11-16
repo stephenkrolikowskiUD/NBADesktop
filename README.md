@@ -301,3 +301,18 @@ no paid engine run was triggered as part of implementation.
 - Include the new nba_markets.py and nba_security.py modules in the commit.
   All verification is offline with mocked APIs/Sheets; model policy and workflow
   schedules are unchanged.
+
+## NBA performance breakdowns
+
+The grader now publishes `Comparison_Selections`, containing exactly the first
+pregame selections used by `Comparison_Performance`. Push the update, run the
+NBA grader once, then refresh Stats. No engine run is needed.
+
+Stats shows market-by-direction, Monday-start weeks, model versions, and an
+expandable individual pick history with original lines, prices, actuals and
+publication times. Missing model versions remain `Unrecorded`. All breakdowns
+respect the selected Eastern-date window and reconcile counts and net units to
+the headline before displaying. Missing or mismatched details show an explicit
+message, never legacy totals. Methodology and publication evidence are collapsed.
+Average decimal odds cover priced settled selections; small samples are flagged
+below 30 decisive results, not treated as evidence for betting the opposite side.
