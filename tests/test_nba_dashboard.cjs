@@ -36,6 +36,14 @@ const context=vm.createContext({
 });
 vm.runInContext(code+'\nglobalThis.api={evaluateFeed,loadAllData,searchDashPlayer,getPlayerLogs,renderHitRateCell,getStreaks,render,teamBadge,matchupBadges,getLockInfo,refreshGameLocks,getState:()=>st,easternTodayISO,seasonForDate,normalizePlayerName,getConvergenceBoard,aiAgreesWithBet,buildCandidatePool,entryFindProp,playerAvailability,getBestBets,scoreCandidate,currentPerformanceRows,performanceTabName,entryLatestPicks};',context);
 const api=context.api;
+vm.runInContext("st.tonight=[{TEAM_ABBREVIATION:'PHI',TONIGHT_OPP:'BOS',COMMENCE_TIME:'2026-11-20T00:30:00Z'}]",context);
+assert.match(vm.runInContext("matchupTime('BOS','PHI')",context),/7:30 PM EST/);
+assert.match(vm.runInContext("teamMatchup('PHI','BOS')",context),/7:30 PM EST/);
+assert.match(vm.runInContext("matchupBadges('PHI vs BOS')",context),/7:30 PM EST/);
+assert.equal(vm.runInContext("matchupTime('NYK','BOS')",context),'Time unavailable');
+vm.runInContext("st.tonight.push({TEAM_ABBREVIATION:'PHI',TONIGHT_OPP:'BOS',COMMENCE_TIME:'2026-11-20T01:30:00Z'})",context);
+assert.equal(vm.runInContext("matchupTime('PHI','BOS')",context),'Time unavailable');
+vm.runInContext("st.tonight=[]",context);
 const chartFixtures=Array.from({length:12},(_,i)=>({GAME_OPP:i%2?'BOS':'NYK',MATCHUP:i%2?'PHI @ BOS':'PHI vs. NYK',id:i}));
 context.chartFixtures=chartFixtures;
 assert.equal(vm.runInContext("researchChartLogs(chartFixtures,'5','ALL','ALL').length",context),5);

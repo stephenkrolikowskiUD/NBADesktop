@@ -389,8 +389,23 @@ function teamBadge(value){
   if(!NBA_LOGO_TEAMS.has(code))return esc(label);
   return `<span class="team-badge"><img class="team-logo" src="assets/team-logos/${code}.svg" alt="" width="24" height="24" decoding="async" onerror="this.hidden=true"/>${esc(code)}</span>`;
 }
-function teamMatchup(team,opp){return `<span class="team-matchup">${teamBadge(team)}<span>vs</span>${teamBadge(opp)}</span>`}
-function matchupBadges(text){return String(text||'').split(/(\b[A-Z]{2,4}\b)/).map(part=>NBA_LOGO_TEAMS.has(part)?teamBadge(part):esc(part)).join('')}
+function matchupTime(team,opp){
+  const canonical=v=>({BRK:'BKN',CHO:'CHA',PHO:'PHX',GS:'GSW',NO:'NOP',NY:'NYK',SA:'SAS',UTAH:'UTA'})[String(v||'').toUpperCase()]||String(v||'').toUpperCase();
+  const a=canonical(team),b=canonical(opp);
+  if(!NBA_LOGO_TEAMS.has(a)||!NBA_LOGO_TEAMS.has(b))return '';
+  const times=[...new Set((st.tonight||[]).filter(r=>{
+    const t=canonical(r.TEAM_ABBREVIATION),o=canonical(r.TONIGHT_OPP);
+    return (t===a&&o===b)||(t===b&&o===a);
+  }).map(getTonightStartMs).filter(t=>Number.isFinite(t)&&t>0))];
+  if(times.length!==1)return 'Time unavailable';
+  return new Date(times[0]).toLocaleString('en-US',{timeZone:'America/New_York',weekday:'short',hour:'numeric',minute:'2-digit',timeZoneName:'short'});
+}
+function matchupTimeHTML(team,opp){const time=matchupTime(team,opp);return time?`<span class="matchup-time"> · ${esc(time)}</span>`:'';}
+function teamMatchup(team,opp){return `<span class="team-matchup">${teamBadge(team)}<span>vs</span>${teamBadge(opp)}${matchupTimeHTML(team,opp)}</span>`}
+function matchupBadges(text){
+  const value=String(text||'');const teams=value.match(/\b[A-Z]{2,4}\b/g)?.filter(t=>NBA_LOGO_TEAMS.has(t))||[];
+  return value.split(/(\b[A-Z]{2,4}\b)/).map(part=>NBA_LOGO_TEAMS.has(part)?teamBadge(part):esc(part)).join('')+(teams.length===2?matchupTimeHTML(teams[0],teams[1]):'');
+}
 function impliedProb(odds){if(odds===null||odds===undefined||odds==="")return null;const o=Number(odds);if(!Number.isFinite(o)||Math.abs(o)<100)return null;return o<0?Math.abs(o)/(Math.abs(o)+100):100/(o+100)}
 function cleanName(v){return String(v||"").trim()}
 function normalizeDate(val){

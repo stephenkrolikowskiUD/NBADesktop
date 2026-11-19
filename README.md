@@ -306,6 +306,10 @@ no paid engine run was triggered as part of implementation.
 
 ### Player research layout (November 19)
 
+Matchup labels on Picks and the player market panel include weekday, tipoff and
+Eastern timezone from the current Tonight feed. Missing or conflicting times
+show `Time unavailable`; no additional API call or engine change is required.
+
 - Player identity, current matchup, Eastern tipoff and availability now sit above
   the research panels. Headshots use a supplied HTTPS URL when available, with
   initials on missing/failed images; no new image API is required.
