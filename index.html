@@ -3,7 +3,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8"/>
-<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>NBA DFS Dashboard</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <style>
@@ -272,6 +272,22 @@ tr.win td{background:#0f2a1a}tr.loss td{background:#2a0f0f}
   .cards-grid .draft-tier-label{grid-column:1/-1}.split-row{gap:16px}
 }
 @media(min-width:1400px){.cards-grid{grid-template-columns:repeat(3,1fr)}.header{padding:12px 32px}.section{padding:16px 32px 0}.dash-grid{padding:0 32px;gap:0 28px}.dash-bottom{padding:0 32px}}
+.player-summary{display:flex;align-items:center;gap:16px;margin:20px 24px 0;padding-bottom:20px;border-bottom:1px solid #444;min-width:0}
+.player-portrait{width:64px;height:64px;flex:none;border-radius:50%;overflow:hidden;position:relative;background:#333;display:grid;place-items:center;color:#eab308;font-weight:700}
+.player-portrait img{position:absolute;width:100%;height:100%;object-fit:cover}
+.player-summary h1{font-size:26px;line-height:1.2;margin-bottom:6px;overflow-wrap:anywhere}
+.player-summary p{font-size:12px;line-height:1.6;color:#9ca3af}
+.player-market{margin-left:auto;text-align:right;flex-shrink:0}.player-market strong{display:block;font-size:24px;color:#eab308}
+.research-controls{display:flex;flex-wrap:wrap;gap:10px;margin:12px 0}.research-controls label{flex:1;min-width:100px;font-size:11px;color:#9ca3af}.research-controls select{display:block;margin-top:4px}
+.dash-grid>*{min-width:0}.page{min-width:0}.research-chart{overflow-x:auto;max-width:100%}.research-chart .bar-chart{height:160px;min-width:100%;width:max-content}.research-chart .bar-wrap{width:44px;flex:1 0 44px}
+body.light .player-portrait{background:#e5e7eb}body.light .player-summary p{color:#555}
+@media(max-width:767px){
+ .header{position:relative}.header-controls{display:grid;grid-template-columns:minmax(0,1fr) 80px}.header-controls .search-wrap{grid-column:1/-1;min-width:0}
+ .player-summary{margin:16px 16px 0;gap:10px;flex-wrap:wrap}.player-summary h1{font-size:22px}.player-summary .player-identity{flex:1;min-width:0}.player-portrait{width:52px;height:52px}
+ .player-market{width:100%;text-align:left;display:flex;align-items:baseline;gap:8px;margin-left:62px}.player-market strong{font-size:20px}
+ .slate-banner{font-size:11px;padding:6px 12px}.tab-bar{padding-bottom:env(safe-area-inset-bottom)}
+ .research-controls select{font-size:16px}.dash-grid{min-width:0}.research-chart .bar-wrap{width:38px;flex-basis:38px}
+}
 </style>
 </head>
 <body>
@@ -1228,6 +1244,21 @@ function analysisSplitBars(items){
   const max=Math.max(.1,...items.map(item=>item.v??0));
   return items.map(item=>`<div class="mini-bar-wrap">${item.v===null?'':`<div class="mini-bar" style="height:${Math.max(0,item.v/max*60)}px;background:${item.c}"></div>`}<div class="mini-bar-label">${item.l}</div><div class="mini-bar-val">${item.v===null?'Unavailable':item.v.toFixed(1)}</div></div>`).join('');
 }
+function researchChartLogs(logs,range,opponent,venue){
+  const filtered=logs.filter(g=>(opponent==='ALL'||String(g.GAME_OPP||'')===opponent)&&(venue==='ALL'||(venue==='HOME'?String(g.MATCHUP||'').includes('vs.'):String(g.MATCHUP||'').includes('@'))));
+  return (range==='SEASON'?filtered:filtered.slice(0,range==='5'?5:10)).slice().reverse();
+}
+function setResearchFilter(key,value){
+  if(!['chartRange','chartOpponent','chartVenue'].includes(key))return;
+  st[key]=value;render();
+}
+function renderPlayerSummary(player,row,metric,line,availability){
+  const initials=String(player||'').split(/\s+/).map(s=>s[0]||'').slice(0,2).join('');
+  const photo=String(row.HEADSHOT_URL||row.headshot_url||'');
+  const start=getTonightStartMs(row);
+  const time=Number.isFinite(start)&&start>0?new Date(start).toLocaleString('en-US',{timeZone:'America/New_York',weekday:'short',hour:'numeric',minute:'2-digit',timeZoneName:'short'}):'Tipoff unavailable';
+  return `<section class="player-summary" aria-label="Player research"><div class="player-portrait" aria-hidden="true">${esc(initials)}${/^https:\/\//.test(photo)?`<img src="${esc(photo)}" alt="" onerror="this.remove()">`:''}</div><div class="player-identity"><h1>${esc(player||'Choose a player')}</h1><p>${esc(row.TEAM_ABBREVIATION||'Team unavailable')} · ${row.TONIGHT_OPP?'vs '+esc(row.TONIGHT_OPP):'No current matchup'} · ${esc(time)}</p><p>Availability: ${esc(availability==='UNKNOWN'?'Not confirmed':availability)}</p></div><div class="player-market"><span>${esc(metric)} · research line</span><strong>${esc(line===''?'Not set':line)}</strong></div></section>`;
+}
 function render(){
   const focus=saveFocus();
   const app=document.getElementById("app");
@@ -1236,7 +1267,8 @@ function render(){
   const{tonight,props,splits,player,metric,line,activeTab,oppFilter,aiPicks,picksView}=st;
   const lineNum=parseFloat(line)||0;const playerKey=normalizePlayerName(player);const pT=tonight.find(t=>normalizePlayerName(t.PLAYER_NAME)===playerKey)||{};
   const pHasLogs=hasLogs(player);
-  const allLogs=getPlayerLogs(player);const last10=allLogs.slice().reverse().slice(-10);const most=allLogs[0]||{};
+  if(st.chartPlayer!==playerKey){st.chartPlayer=playerKey;st.chartOpponent='ALL';st.chartVenue='ALL';}
+  const allLogs=getPlayerLogs(player);const last10=researchChartLogs(allLogs,st.chartRange||'10',st.chartOpponent||'ALL',st.chartVenue||'ALL');const most=allLogs[0]||{};
   const prop=props.find(p=>normalizePlayerName(p.PLAYER_NAME)===playerKey&&normalizePropName(p.METRIC)===normalizePropName(metric))||{};
   const split=splits.find(s=>normalizePlayerName(s.PLAYER_NAME)===playerKey)||{};
 
@@ -1432,10 +1464,11 @@ function render(){
     </div>`:""}</div>
 
   <div class="page ${activeTab==="dashboard"?"active":""}">
+    ${renderPlayerSummary(player,pT,metric,line,playerAvailability(player))}
     ${earlyBanner}
     ${pHasLogs?`<div class="stats-strip"><div class="stats-strip-inner">${statStrip}</div></div>`:""}
     <div class="dash-grid">
-    ${pHasLogs?`<div class="section"><div class="label">Game Log — ${metric}</div><p class="analysis-note">Latest ${last10.length} of ${allLogs.length} loaded analysis-season games. Full history in Log.</p><div class="bar-chart">${bars}</div>${lineNum?`<div class="line-indicator">Line: ${lineNum}</div>`:""}</div>`:""}
+    ${pHasLogs?`<div class="section"><div class="label">Game Log — ${metric}</div><div class="research-controls"><label>Range<select aria-label="Chart game range" onchange="setResearchFilter('chartRange',this.value)">${[['5','Last 5'],['10','Last 10'],['SEASON','Season']].map(([v,l])=>`<option value="${v}" ${(st.chartRange||'10')===v?'selected':''}>${l}</option>`).join('')}</select></label><label>Opponent<select aria-label="Chart opponent" onchange="setResearchFilter('chartOpponent',this.value)">${['ALL',...new Set(allLogs.map(g=>g.GAME_OPP).filter(Boolean))].map(v=>`<option value="${esc(v)}" ${(st.chartOpponent||'ALL')===v?'selected':''}>${v==='ALL'?'All opponents':esc(v)}</option>`).join('')}</select></label><label>Venue<select aria-label="Chart venue" onchange="setResearchFilter('chartVenue',this.value)">${[['ALL','Home + away'],['HOME','Home'],['AWAY','Away']].map(([v,l])=>`<option value="${v}" ${(st.chartVenue||'ALL')===v?'selected':''}>${l}</option>`).join('')}</select></label></div><p class="analysis-note">${last10.length} matching games of ${allLogs.length} loaded analysis-season games. Filters affect this chart only; averages below remain unfiltered.</p><div class="research-chart"><div class="bar-chart">${bars||'<p>No games match these filters.</p>'}</div></div>${lineNum?`<div class="line-indicator">Line: ${lineNum}</div>`:""}</div>`:""}
     ${pHasLogs?`<div class="section"><div class="label">Averages</div><div class="avg-cards">${avgs}</div></div>`:""}
     ${pHasLogs?`<div class="section"><div class="split-row"><div class="split-card"><span class="split-title">H2H vs ${esc(pT.TONIGHT_OPP||"—")}</span><div class="mini-bars-container">${h2hBars}</div><p class="analysis-note">${h2hVal===null?'Opponent history unavailable.':'Feed average; sample size and history period unavailable.'}</p></div><div class="split-card"><span class="split-title">Home / Away</span><div class="mini-bars-container">${hrBars}</div><p class="analysis-note">Feed averages; split sample sizes unavailable.</p></div></div></div>`:""}
     <div class="section"><div class="card"><div class="card-title">⚡ Vegas</div><div class="vegas-row"><span class="vegas-key">${teamMatchup(pT.TEAM_ABBREVIATION,pT.TONIGHT_OPP)}</span><span style="color:#22c55e;font-size:12px;font-weight:600">${pT.SPREAD?`Spread: ${pT.SPREAD}`:"—"}</span></div><div class="vegas-row"><span class="vegas-key">Team Total</span><span class="vegas-val">${pT.IMPLIED_TOTAL||"—"}</span></div><div class="vegas-row"><span class="vegas-key">Opp Total</span><span class="vegas-val">${pT.OPP_IMPLIED_TOTAL||"—"}</span></div><div class="vegas-row"><span class="vegas-key">Game Total</span><span class="vegas-val">${pT.GAME_TOTAL||"—"}</span></div></div></div>

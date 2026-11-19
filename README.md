@@ -304,6 +304,21 @@ no paid engine run was triggered as part of implementation.
 
 ## NBA performance breakdowns
 
+### Player research layout (November 19)
+
+- Player identity, current matchup, Eastern tipoff and availability now sit above
+  the research panels. Headshots use a supplied HTTPS URL when available, with
+  initials on missing/failed images; no new image API is required.
+- Chart controls: last 5, last 10, or the loaded analysis season; opponent and
+  home/away. Filters apply to the chart only, not season averages or the model.
+  Opponent and venue reset when changing players. Empty matches are explicit.
+- Mobile uses a non-sticky compact header, full-width player search, contained
+  chart scrolling, and supports browser zoom. Fonts and background are retained.
+- Porting contract for NFL/NHL: freshness banner, player identity and availability,
+  market controls, evidence chart, averages/splits, then markets. Retain each
+  sport's typography, background, metric definitions and publication rules.
+- Deploy with a page refresh only; no engine/grader run or model changes needed.
+
 The grader now publishes `Comparison_Selections`, containing exactly the first
 pregame selections used by `Comparison_Performance`. Push the update, run the
 NBA grader once, then refresh Stats. No engine run is needed.

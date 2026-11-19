@@ -36,6 +36,17 @@ const context=vm.createContext({
 });
 vm.runInContext(code+'\nglobalThis.api={evaluateFeed,loadAllData,searchDashPlayer,getPlayerLogs,renderHitRateCell,getStreaks,render,teamBadge,matchupBadges,getLockInfo,refreshGameLocks,getState:()=>st,easternTodayISO,seasonForDate,normalizePlayerName,getConvergenceBoard,aiAgreesWithBet,buildCandidatePool,entryFindProp,playerAvailability,getBestBets,scoreCandidate,currentPerformanceRows,performanceTabName,entryLatestPicks};',context);
 const api=context.api;
+const chartFixtures=Array.from({length:12},(_,i)=>({GAME_OPP:i%2?'BOS':'NYK',MATCHUP:i%2?'PHI @ BOS':'PHI vs. NYK',id:i}));
+context.chartFixtures=chartFixtures;
+assert.equal(vm.runInContext("researchChartLogs(chartFixtures,'5','ALL','ALL').length",context),5);
+assert.equal(vm.runInContext("researchChartLogs(chartFixtures,'SEASON','ALL','ALL').length",context),12);
+assert.equal(vm.runInContext("researchChartLogs(chartFixtures,'10','BOS','AWAY').length",context),6);
+assert.equal(vm.runInContext("researchChartLogs(chartFixtures,'10','BOS','HOME').length",context),0);
+assert.equal(vm.runInContext("researchChartLogs(chartFixtures,'5','ALL','ALL')[0].id",context),4);
+const identity=vm.runInContext("renderPlayerSummary('<Player>',{},'RA','0','UNKNOWN')",context);
+assert.match(identity,/&lt;Player&gt;/);assert.match(identity,/Tipoff unavailable/);assert.match(identity,/Not confirmed/);
+assert.match(identity,/>0<\/strong>/);
+assert.doesNotMatch(vm.runInContext("renderPlayerSummary('Player',{HEADSHOT_URL:'javascript:bad'},'PTS','','UNKNOWN')",context),/<img/);
 const banner=vm.runInContext("renderSlateBanner({usable:true,status:'DEGRADED',aging:true,slateDate:'2026-11-13',text:'Details <safe>'})",context);
 assert.match(banner,/Limited data.*Stale prices/);
 assert.match(banner,/Details &lt;safe&gt;/);
