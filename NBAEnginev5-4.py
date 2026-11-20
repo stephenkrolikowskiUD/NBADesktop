@@ -25,7 +25,7 @@ from nba_markets import is_pregame, fetch_batch
 import nba_sources
 import nba_injuries
 from nba_readiness import side_estimates, qualify_model_picks, cap_qualified_picks
-from nba_role_audit import ROLE_FIELDS, role_context
+from nba_role_audit import ROLE_FIELDS, role_context, write_snapshot
 from nba_readiness import season_for_date, event_is_on_date, validate_market_picks, replace_sheet_values, select_analysis_history, finite_odds_probability, non_push_rate, selection_key, is_actionable_player, dashboard_stats, PERFORMANCE_POLICY, resolve_slate, slate_market_events, gemini_billing_exhausted
 
 # --- 1. AUTHENTICATION & SETUP ---
@@ -1589,6 +1589,7 @@ df_ev = pd.DataFrame()
 df_movers = pd.DataFrame()
 model_evidence = {}
 role_evidence = {}
+audit_candidates = []
 
 if not df_props.empty and len(df_logs) > 0:
     logs_by_player = {name: group.sort_values('GAME_DATE', ascending=False) for name, group in df_logs.groupby('PLAYER_NAME')}
@@ -1645,6 +1646,16 @@ if not df_props.empty and len(df_logs) > 0:
             continue
         role = role_context(p_logs.to_dict('records'), today_str)
         role_evidence[normalizePlayerName(player)] = role
+        audit_candidates.append({
+            'player': player, 'metric': metric, 'line': dk_line,
+            'over_odds': over_odds, 'under_odds': under_odds,
+            'reliability': edge_multiplier, 'estimates': estimates, 'role': role,
+            'event_id': prop.get('EVENT_ID', ''),
+            'commence_time': prop.get('COMMENCE_TIME', ''),
+            'quote_time': prop.get('QUOTE_TIME', ''),
+            'book': prop.get('BOOK', 'draftkings'),
+            'history': json.loads(p_logs.to_json(orient='records', date_format='iso')),
+        })
         model_evidence[(normalizePlayerName(player), metric.upper(), dk_line)] = estimates
         edge_over = round(estimates['OVER']['edge'], 1)
         edge_under = round(estimates['UNDER']['edge'], 1)
@@ -1758,6 +1769,19 @@ print("🤖 GEMINI AI DAILY PICKS GENERATOR")
 print("=" * 60)
 
 df_picks = pd.DataFrame()
+audit_directory = os.getenv('NBA_AUDIT_DIR', '')
+audit_payload = {
+    'schema': 'nba-accuracy-inputs-v1',
+    'model_policy': 'nba-symmetric-market-prior-v1',
+    'selection_policy': 'qualified-ev-ranked-cap-v1',
+    'captured_at': datetime.now(pytz.UTC).isoformat(),
+    'slate_date': today_str, 'run_id': RUN_ID,
+    'commit': os.getenv('GITHUB_SHA', ''),
+    'candidates': audit_candidates,
+    'player_context': json.loads(df_tonight_sheet.to_json(orient='records', date_format='iso')),
+}
+if audit_directory:
+    write_snapshot(os.path.join(audit_directory, 'inputs.json.gz'), audit_payload)
 existing_daily_picks = load_existing_daily_picks(sh, today_str)
 existing_run_numbers = pd.to_numeric(existing_daily_picks.get('RUN_NUMBER', pd.Series(dtype=float)), errors='coerce').dropna().astype(int)
 today_run_number = int(existing_run_numbers.max()) + 1 if not existing_run_numbers.empty else 1
@@ -2150,10 +2174,18 @@ IMPORTANT: Return ONLY the JSON array. No markdown, no preamble."""
             starts = pd.to_datetime(df_picks['COMMENCE_TIME'], utc=True, errors='coerce')
             df_picks = df_picks[starts.notna() & (starts > pd.Timestamp.now(tz='UTC'))].copy()
         qualified_count = len(df_picks)
+        if audit_directory:
+            write_snapshot(os.path.join(audit_directory, 'qualified.json.gz'), {
+                'run_id': RUN_ID, 'stage': 'qualified-before-cap-not-published',
+                'picks': json.loads(df_picks.to_json(orient='records', date_format='iso'))})
         df_picks = pd.DataFrame(cap_qualified_picks(df_picks.to_dict('records'), normalizePlayerName))
         print(f'Qualified diversity cap: {qualified_count} candidates -> {len(df_picks)} selections')
         if not df_picks.empty:
             df_picks['SELECTION_POLICY'] = 'qualified-ev-ranked-cap-v1'
+        if audit_directory:
+            write_snapshot(os.path.join(audit_directory, 'selected.json.gz'), {
+                'run_id': RUN_ID, 'stage': 'selected-before-publication-not-a-receipt',
+                'picks': json.loads(df_picks.to_json(orient='records', date_format='iso'))})
         if df_picks.empty:
             raise RuntimeError('No picks matched a priced live market; no picks published')
 

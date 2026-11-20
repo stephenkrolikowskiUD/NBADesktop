@@ -36,6 +36,7 @@ jobs:
       EVENT_SCHEDULE: ${{ github.event.schedule }}
       NBA_SHEET_ID: ${{ vars.NBA_SHEET_ID }}
       NBA_BACKUP_DIR: nba_backups
+      NBA_AUDIT_DIR: nba_accuracy_snapshots
       NBA_PLAYER_LOG_SOURCE: espn
       ODDS_API_KEY: ${{ secrets.ODDS_API_KEY }}
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
@@ -71,3 +72,12 @@ jobs:
           path: nba_backups/
           retention-days: 7
           if-no-files-found: ignore
+
+      - name: Save prediction audit inputs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nba-accuracy-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: nba_accuracy_snapshots/
+          retention-days: 90
+          if-no-files-found: warn

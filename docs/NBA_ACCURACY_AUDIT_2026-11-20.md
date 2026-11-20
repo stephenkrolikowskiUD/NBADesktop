@@ -54,8 +54,10 @@ interpreting this as proof of improvement. No thresholds were fitted to it.
 An honest full replay still needs archived candidate sets, paired prices,
 quote timestamps, historical inputs and injury/role context captured before
 tipoff. The replay helper tests numeric reproducibility, not Gemini candidate
-selection or future profitability. Automatic GitHub artifact export is not
-wired: explicit approval for its storage/access boundary is pending.
+selection or future profitability. Automatic GitHub artifact export is now
+wired after explicit approval for 90-day retention. Inputs are captured before
+Gemini selection; qualified and selected outputs are separate snapshots, not
+publication receipts. Invalid timing remains excluded by the replay validator.
 
 ## Reproduce locally
 

@@ -1,9 +1,21 @@
 import unittest
-from nba_role_audit import role_context, audit, replay_snapshot, score
+import gzip
+import json
+import tempfile
+from pathlib import Path
+from nba_role_audit import role_context, audit, replay_snapshot, score, write_snapshot
 from nba_readiness import side_estimates
 
 
 class RoleAuditTests(unittest.TestCase):
+    def test_snapshot_round_trip(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'inputs' / 'inputs.json.gz'
+            payload = {'candidates': [], 'stage': 'inputs-not-publication'}
+            write_snapshot(path, payload)
+            with gzip.open(path, 'rt') as handle:
+                self.assertEqual(json.load(handle), payload)
+
     def history(self):
         return [dict(GAME_DATE=f'2026-11-{day:02}', MIN=36 if day > 7 else 24,
                      FGA=12, FTA=2, TOV=1, PRA=30, TEAM_ABBREVIATION='BOS')

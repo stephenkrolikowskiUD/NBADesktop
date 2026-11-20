@@ -358,4 +358,7 @@ read-only CSV exports and validates numeric replay inputs. New engine picks
 retain `ROLE_*` diagnostics; these are not automatic probability adjustments.
 The existing market cap now runs after qualification in EV order, recorded as
 `SELECTION_POLICY=qualified-ev-ranked-cap-v1`. No EV floors were lowered.
-Full point-in-time artifact collection is not enabled pending storage approval.
+With approved 90-day retention, Actions archives numeric candidate inputs,
+paired prices, histories, player context and pre-publication selection stages.
+Artifacts are run/attempt-specific and contain no credentials. They are not
+publication receipts. Local runs archive only when `NBA_AUDIT_DIR` is set.
