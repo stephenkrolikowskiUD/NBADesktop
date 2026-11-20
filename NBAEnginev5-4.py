@@ -24,7 +24,8 @@ from nba_security import redact, register_secret, safe_print as print
 from nba_markets import is_pregame, fetch_batch
 import nba_sources
 import nba_injuries
-from nba_readiness import side_estimates, qualify_model_picks
+from nba_readiness import side_estimates, qualify_model_picks, cap_qualified_picks
+from nba_role_audit import ROLE_FIELDS, role_context
 from nba_readiness import season_for_date, event_is_on_date, validate_market_picks, replace_sheet_values, select_analysis_history, finite_odds_probability, non_push_rate, selection_key, is_actionable_player, dashboard_stats, PERFORMANCE_POLICY, resolve_slate, slate_market_events, gemini_billing_exhausted
 
 # --- 1. AUTHENTICATION & SETUP ---
@@ -1587,6 +1588,7 @@ print("=" * 60)
 df_ev = pd.DataFrame()
 df_movers = pd.DataFrame()
 model_evidence = {}
+role_evidence = {}
 
 if not df_props.empty and len(df_logs) > 0:
     logs_by_player = {name: group.sort_values('GAME_DATE', ascending=False) for name, group in df_logs.groupby('PLAYER_NAME')}
@@ -1641,6 +1643,8 @@ if not df_props.empty and len(df_logs) > 0:
         estimates = side_estimates(p_logs[metric], dk_line, over_odds, under_odds, edge_multiplier)
         if not estimates:
             continue
+        role = role_context(p_logs.to_dict('records'), today_str)
+        role_evidence[normalizePlayerName(player)] = role
         model_evidence[(normalizePlayerName(player), metric.upper(), dk_line)] = estimates
         edge_over = round(estimates['OVER']['edge'], 1)
         edge_under = round(estimates['UNDER']['edge'], 1)
@@ -2109,34 +2113,7 @@ IMPORTANT: Return ONLY the JSON array. No markdown, no preamble."""
         dropped = bf - len(df_picks)
         if dropped > 0:
             print(f"🚫 Post-filter removed {dropped} hallucinated picks")
-        if not df_picks.empty and 'prop_type' in df_picks.columns:
-            player_norm_series = df_picks['player'].map(normalizePlayerName)
-            players_with_pr = set(player_norm_series[df_picks['prop_type'].fillna('').astype(str).str.upper() == 'PR'])
-            prop_type_counts = {}
-            under_count = 0
-            kept_rows = []
-            dropped_prop_caps = []
-            for _, row in df_picks.iterrows():
-                prop_type = str(row.get('prop_type', '') or '').strip().upper()
-                lean = str(row.get('lean', '') or '').strip().upper()
-                conf = normalize_confidence(row.get('confidence'))
-                player_norm = normalizePlayerName(row.get('player', ''))
-                if prop_type == 'PRA' and player_norm in players_with_pr:
-                    dropped_prop_caps.append(f"{row.get('player', '?')} PRA — PR preferred for same player")
-                    continue
-                if prop_type_counts.get(prop_type, 0) >= 3:
-                    dropped_prop_caps.append(f"{row.get('player', '?')} {prop_type} — per-type cap")
-                    continue
-                prop_type_counts[prop_type] = prop_type_counts.get(prop_type, 0) + 1
-                if lean in {'UNDER', 'FADE'}:
-                    under_count += 1
-                kept_rows.append(row.to_dict())
-            if dropped_prop_caps:
-                print(f"🚫 Post-filter removed {len(dropped_prop_caps)} extra prop-type picks")
-                for reason in dropped_prop_caps[:20]:
-                    print(f"   - {reason}")
-            df_picks = pd.DataFrame(kept_rows)
-        dropped_prop_caps = dropped_prop_caps if 'dropped_prop_caps' in locals() else []
+        dropped_prop_caps = []
         if not df_picks.empty:
             df_picks['confidence'] = df_picks['confidence'].map(normalize_confidence)
             returning_mask = df_picks['player'].map(lambda n: returning_player_map.get(normalizePlayerName(n), False))
@@ -2172,6 +2149,11 @@ IMPORTANT: Return ONLY the JSON array. No markdown, no preamble."""
         if not df_picks.empty:
             starts = pd.to_datetime(df_picks['COMMENCE_TIME'], utc=True, errors='coerce')
             df_picks = df_picks[starts.notna() & (starts > pd.Timestamp.now(tz='UTC'))].copy()
+        qualified_count = len(df_picks)
+        df_picks = pd.DataFrame(cap_qualified_picks(df_picks.to_dict('records'), normalizePlayerName))
+        print(f'Qualified diversity cap: {qualified_count} candidates -> {len(df_picks)} selections')
+        if not df_picks.empty:
+            df_picks['SELECTION_POLICY'] = 'qualified-ev-ranked-cap-v1'
         if df_picks.empty:
             raise RuntimeError('No picks matched a priced live market; no picks published')
 
@@ -2234,6 +2216,10 @@ IMPORTANT: Return ONLY the JSON array. No markdown, no preamble."""
                      'CLV_OPEN_LINE', 'CLV_LATEST_LINE', 'CLV_DELTA', 'CLV_LAST_UPDATE',
                      'RESULT', 'ACTUAL_STAT', 'HIT', 'LAST_UPDATED']
         col_order += ['MODEL_PROBABILITY', 'MODEL_EV_PCT', 'MODEL_POLICY', 'MODEL_GAMES']
+        for field in ROLE_FIELDS:
+            df_picks[field] = df_picks['player'].map(
+                lambda n: role_evidence.get(normalizePlayerName(n), {}).get(field))
+        col_order += ROLE_FIELDS + ['SELECTION_POLICY']
         df_picks = df_picks[[c for c in col_order if c in df_picks.columns]]
         if not df_picks.empty:
             df_picks = df_picks.reset_index(drop=True)

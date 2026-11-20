@@ -3,10 +3,20 @@ import ast
 from pathlib import Path
 import unittest
 
-from nba_readiness import side_estimates, qualify_model_picks
+from nba_readiness import side_estimates, qualify_model_picks, cap_qualified_picks
 
 
 class SelectionTests(unittest.TestCase):
+    def test_cap_runs_after_qualification_and_ranks_both_sides(self):
+        picks = [dict(player=str(i), prop_type='PTS', line=1,
+                      lean='UNDER' if i == 4 else 'OVER') for i in range(5)]
+        evidence = {(str(i), 'PTS', 1): {p['lean']: dict(ev=ev, edge=2, probability=.6, games=10)}
+                    for i, (p, ev) in enumerate(zip(picks, [1, 2, 6, 7, 10]))}
+        qualified = qualify_model_picks(picks, evidence, str)
+        result = cap_qualified_picks(qualified, str)
+        self.assertEqual([p['player'] for p in result], ['4', '3', '2'])
+        self.assertEqual(result[0]['lean'], 'UNDER')
+
     def test_sides_are_symmetric(self):
         over = side_estimates([2] * 9 + [0], 1, -110, -110)
         under = side_estimates([0] * 9 + [2], 1, -110, -110)

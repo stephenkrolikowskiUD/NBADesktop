@@ -349,3 +349,13 @@ the headline before displaying. Missing or mismatched details show an explicit
 message, never legacy totals. Methodology and publication evidence are collapsed.
 Average decimal odds cover priced settled selections; small samples are flagged
 below 30 decisive results, not treated as evidence for betting the opposite side.
+
+### NBA accuracy audit (November 20)
+
+See [the accuracy audit](docs/NBA_ACCURACY_AUDIT_2026-11-20.md) for direction,
+role-change, calibration and chronological findings. `nba_role_audit.py` audits
+read-only CSV exports and validates numeric replay inputs. New engine picks
+retain `ROLE_*` diagnostics; these are not automatic probability adjustments.
+The existing market cap now runs after qualification in EV order, recorded as
+`SELECTION_POLICY=qualified-ev-ranked-cap-v1`. No EV floors were lowered.
+Full point-in-time artifact collection is not enabled pending storage approval.

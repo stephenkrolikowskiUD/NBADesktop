@@ -262,6 +262,22 @@ def qualify_model_picks(picks, evidence, normalize_name):
     return sorted(selected, key=lambda row: row['MODEL_EV_PCT'], reverse=True)
 
 
+def cap_qualified_picks(picks, normalize_name):
+    """Apply existing diversity rules only to qualified, EV-ranked candidates."""
+    ranked = sorted(picks, key=lambda row: row['MODEL_EV_PCT'], reverse=True)
+    players_with_pr = {normalize_name(r['player']) for r in ranked if r['prop_type'] == 'PR'}
+    counts, kept = {}, []
+    for row in ranked:
+        metric = row['prop_type']
+        if metric == 'PRA' and normalize_name(row['player']) in players_with_pr:
+            continue
+        if counts.get(metric, 0) >= 3:
+            continue
+        kept.append(row)
+        counts[metric] = counts.get(metric, 0) + 1
+    return kept
+
+
 def box_metrics(row):
     """Fantasy and combination stats shared by the final-box grading path."""
     result=dict(row)
