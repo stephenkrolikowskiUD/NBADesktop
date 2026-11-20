@@ -306,6 +306,20 @@ no paid engine run was triggered as part of implementation.
 
 ### Player research layout (November 19)
 
+The research dashboard retains the NBA layout and adds a compact, horizontally
+scrollable schedule above player identity. It uses only `Tonights_Opponent`
+rows with the exact active `SLATE_DATE`, canonicalizes team aliases, and merges
+duplicate/reversed pairs. Cards use existing local team logos and neutral `vs`
+labels (ordering does not imply home/away). Verified Eastern tipoffs sort first;
+missing, invalid, off-date, timezone-less or conflicting times show
+`Time unavailable`. ISO timestamps and valid Date objects are supported.
+Unavailable feeds and empty schedules are explicit; no new data calls are made.
+
+For a self-contained visual fixture with 12 logs and known matchups, run
+`NBA_RESEARCH_PREVIEW=1 node tests/test_nba_dashboard.cjs` from this repository.
+It exports `/tmp/nba-research-preview.html` with inline styles and embedded logos.
+This is a static rendered fixture, not a live data session.
+
 Matchup labels on Picks and the player market panel include weekday, tipoff and
 Eastern timezone from the current Tonight feed. Missing or conflicting times
 show `Time unavailable`; no additional API call or engine change is required.

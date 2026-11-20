@@ -36,6 +36,44 @@ const context=vm.createContext({
 });
 vm.runInContext(code+'\nglobalThis.api={evaluateFeed,loadAllData,searchDashPlayer,getPlayerLogs,renderHitRateCell,getStreaks,render,teamBadge,matchupBadges,getLockInfo,refreshGameLocks,getState:()=>st,easternTodayISO,seasonForDate,normalizePlayerName,getConvergenceBoard,aiAgreesWithBet,buildCandidatePool,entryFindProp,playerAvailability,getBestBets,scoreCandidate,currentPerformanceRows,performanceTabName,entryLatestPicks};',context);
 const api=context.api;
+// Exact-date schedule pairs, not player rows or inferred home/away order.
+vm.runInContext(`
+st.feedStatus={usable:true,slateDate:'2026-11-19'};
+st.tonight=[
+ {SLATE_DATE:'2026-11-19',TEAM_ABBREVIATION:' ny ',TONIGHT_OPP:'LAL',COMMENCE_TIME:'2026-11-20T00:30:00Z'},
+ {SLATE_DATE:'2026-11-19',TEAM_ABBREVIATION:'LAL',TONIGHT_OPP:'NYK',COMMENCE_TIME:new Date('2026-11-20T00:30:00Z')},
+ {SLATE_DATE:'2026-11-19',TEAM_ABBREVIATION:'BRK',TONIGHT_OPP:'BOS',COMMENCE_TIME:'2026-11-19T23:00:00Z'},
+ {SLATE_DATE:'2026-11-19',TEAM_ABBREVIATION:'BOS',TONIGHT_OPP:'BKN'},
+ {SLATE_DATE:'2026-11-18',TEAM_ABBREVIATION:'PHI',TONIGHT_OPP:'DET'},
+ {TEAM_ABBREVIATION:'PHI',TONIGHT_OPP:'DET'},
+ {SLATE_DATE:'2026-11-19',TEAM_ABBREVIATION:'BAD',TONIGHT_OPP:'DET'},
+ {SLATE_DATE:'2026-11-19',TEAM_ABBREVIATION:'DET',TONIGHT_OPP:'DET'},
+ {SLATE_DATE:'2026-11-19',TEAM_ABBREVIATION:'GS',TONIGHT_OPP:'PHO',COMMENCE_TIME:'bad'},
+ {SLATE_DATE:'2026-11-19',TEAM_ABBREVIATION:'CHI',TONIGHT_OPP:'MIL',COMMENCE_TIME:'2026-11-21T01:00:00Z'},
+ {SLATE_DATE:'2026-11-19',TEAM_ABBREVIATION:'DAL',TONIGHT_OPP:'DEN',COMMENCE_TIME:'2026-11-19T20:00:00'}
+];`,context);
+assert.equal(vm.runInContext('getResearchSchedule().map(g=>g.id).join(",")',context),'BKN|BOS,LAL|NYK,CHI|MIL,DAL|DEN,GSW|PHX');
+assert.equal(vm.runInContext('getResearchSchedule()[1].startMs',context),Date.parse('2026-11-20T00:30:00Z'));
+const schedule=vm.runInContext('renderResearchSchedule()',context);
+assert.match(schedule,/2026-11-19/);assert.match(schedule,/7:30 PM EST/);
+assert.match(schedule,/assets\/team-logos\/BKN.svg/);
+assert.equal((schedule.match(/class="schedule-game"/g)||[]).length,5);
+assert.equal((schedule.match(/Time unavailable/g)||[]).length,3);
+assert.doesNotMatch(schedule,/@|Away|Home/);
+assert.match(schedule,/tabindex="0"/);
+assert.match(html,/\.schedule-scroll\{[^}]*overflow-x:auto/);
+assert.match(html,/\.player-market\{width:calc\(100% - 62px\);min-width:0;[^}]*flex-wrap:wrap;[^}]*margin-left:62px/,'mobile market width must account for its portrait indent');
+vm.runInContext("st.tonight.push({...st.tonight[0],COMMENCE_TIME:'2026-11-20T01:30:00Z'})",context);
+assert.equal(vm.runInContext("getResearchSchedule().find(g=>g.id==='LAL|NYK').startMs",context),null);
+vm.runInContext('st.tonight=st.tonight.slice(1,2)',context);
+assert.equal(vm.runInContext('getResearchSchedule()[0].startMs',context),Date.parse('2026-11-20T00:30:00Z'),'Date-only input retains its verified time');
+vm.runInContext("st.tonight[0].COMMENCE_TIME=new Date('invalid')",context);
+assert.equal(vm.runInContext('getResearchSchedule()[0].startMs',context),null);
+vm.runInContext('st.feedStatus.usable=false',context);
+assert.equal(vm.runInContext('getResearchSchedule().length',context),0);
+assert.match(vm.runInContext('renderResearchSchedule()',context),/Schedule unavailable/);
+vm.runInContext("st.feedStatus={usable:false,status:'NO_GAMES'};st.tonight=[]",context);
+assert.match(vm.runInContext('renderResearchSchedule()',context),/No NBA games scheduled/);
 vm.runInContext("st.tonight=[{TEAM_ABBREVIATION:'PHI',TONIGHT_OPP:'BOS',COMMENCE_TIME:'2026-11-20T00:30:00Z'}]",context);
 assert.match(vm.runInContext("matchupTime('BOS','PHI')",context),/7:30 PM EST/);
 assert.match(vm.runInContext("teamMatchup('PHI','BOS')",context),/7:30 PM EST/);
@@ -82,6 +120,21 @@ function seed(status='READY'){
   };
 }
 (async()=>{
+  if(process.env.NBA_RESEARCH_PREVIEW){
+    seed();
+    fixtures.Tonights_Opponent[0].COMMENCE_TIME=today+'T19:30:00-05:00';
+    fixtures.Tonights_Opponent.push({...base,PLAYER_NAME:'Schedule Example',TEAM_ABBREVIATION:'BOS',TONIGHT_OPP:'PHI',COMMENCE_TIME:today+'T18:00:00-05:00'});
+    fixtures.Dashboard_Player_Stats=Array.from({length:12},(_,i)=>({...player,
+      GAME_DATE:new Date(clock-(i+1)*86400000).toISOString().slice(0,10),
+      GAME_OPP:i%2?'BOS':'NYK',MATCHUP:i%2?'LAL @ BOS':'LAL vs. NYK',PTS:18+i%7*2,MIN:30,Seas_PTS:24}));
+    await api.loadAllData();
+    Object.assign(api.getState(),{activeTab:'dashboard',player:player.PLAYER_NAME,metric:'PTS',line:'20.5',chartRange:'SEASON'});
+    api.render();
+    assert.equal(api.getPlayerLogs(player.PLAYER_NAME).length,12);
+    assert.ok(app.innerHTML.indexOf('class="research-schedule"')<app.innerHTML.indexOf('class="player-summary"'));
+    const body=app.innerHTML.replace(/src="assets\/team-logos\/([A-Z]+)\.svg"/g,(_,team)=>`src="data:image/svg+xml;base64,${fs.readFileSync(`assets/team-logos/${team}.svg`).toString('base64')}"`);
+    fs.writeFileSync('/tmp/nba-research-preview.html',`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>NBA research fixture</title>${html.match(/<style>[\s\S]*?<\/style>/)[0]}</head><body><div id="app">${body}</div></body></html>`);
+  }
   // Recent-game denominators reflect the loaded sample, not the window ceiling.
   for(const count of [1,3,9,12]){
     seed();
