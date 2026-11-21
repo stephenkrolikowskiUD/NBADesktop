@@ -1,5 +1,13 @@
 # NBA DFS Dashboard
 
+## Game pages (2026-11-20)
+
+Click any matchup in the schedule, or use Games, to open its research page. It gathers current Picks and entry-research selections, deduplicating exact player/market/side/line matches and listing their sources. Streaks, heaters and due signals remain separate historical context, not extra recommendations. Player names open the existing research view.
+
+The manual entry tray replaces automatic leg selection on this page. Eligible markets require confirmed availability, a known future start and valid captured odds. Entries persist on this device for the active slate across game navigation; one selection per player, up to eight. Saved quotes are not silently updated: changed prices and unavailable/started selections receive warnings. No synthetic same-game payout is displayed. Mobile includes a compact entry shortcut above navigation.
+
+Frontend only: push and refresh after Pages deployment. No engine/grader run or Odds API credits required. Offline checks: `node tests/test_game_page.cjs` and `node tests/test_nba_dashboard.cjs`.
+
 ## Standardized comparison reporting
 
 The grader writes Comparison_Performance and Comparison_Audit under the shared [cross-sport counting policy](docs/COMPARISON_POLICY.md). The dashboard performance page reads these standardized totals from Comparison_Performance: first pregame selections, original captured odds, exact Eastern game-date windows, and explicit publication evidence. Research-feed and public-board results remain labeled separately. Missing reports do not fall back to legacy totals. Push and refresh the page; if the comparison tabs are already populated, no grader or engine rerun is needed.

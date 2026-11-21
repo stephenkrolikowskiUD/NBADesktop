@@ -1,0 +1,52 @@
+const fs=require('node:fs');
+const vm=require('node:vm');
+const assert=require('node:assert/strict');
+const html=fs.readFileSync('index.html','utf8');
+const code=html.match(/<script>([\s\S]*?)<\/script>/)[1].replace(/loadAllData\(\);\s*setInterval[\s\S]*$/,'');
+const storage=new Map();
+const context=vm.createContext({console,URL,Date,localStorage:{getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v)}});
+vm.runInContext(code,context);
+const run=s=>vm.runInContext(s,context);
+run(`
+render=()=>{};
+const date=easternTodayISO();
+st.feedStatus={usable:true,slateDate:date};
+const future=new Date(Date.now()+60000).toISOString();
+st.tonight=[{SLATE_DATE:date,PLAYER_NAME:'Alpha',TEAM_ABBREVIATION:'LAL',TONIGHT_OPP:'NYK',STATUS:'AVAILABLE',COMMENCE_TIME:future},
+{SLATE_DATE:date,PLAYER_NAME:'Beta',TEAM_ABBREVIATION:'BOS',TONIGHT_OPP:'PHI',STATUS:'AVAILABLE',COMMENCE_TIME:future}];
+st.aiPicks=[{DATE:date,player:'Alpha',prop_type:'PTS',line:20.5,lean:'OVER'},
+{DATE:date,player:'Beta',prop_type:'PTS',line:20.5,lean:'OVER'},
+{DATE:'2000-01-01',player:'Alpha',prop_type:'PTS',line:19.5,lean:'OVER'}];
+st.props=[{PLAYER_NAME:'Alpha',METRIC:'PTS',DK_LINE:20.5,OVER_ODDS:-110,UNDER_ODDS:-110}];
+getSmartSlips=()=>({legs:[{name:'Alpha',metric:'PTS',dkLine:20.5,lean:'OVER'}]});
+getHeaters=()=>[{name:'Alpha',total:10,hitRate3:.5}];
+getDueBoard=()=>[];
+st.streaks=[{player:'Alpha',stat:'PTS',threshold:15,streak:4}];
+st.gameEntry={selectedGame:'LAL|NYK'};
+`);
+assert.equal(run("gamePageData('LAL|NYK').selections.length"),1);
+assert.equal(run("gamePageData('LAL|NYK').selections[0].sources.join(',')"),'Picks,Entry research');
+assert.equal(run("gamePageData('LAL|NYK').signals.length"),2);
+assert.equal(run("gamePageData('LAL|NYK').candidates.length"),2);
+assert.notEqual(run("gameSelectionKey({player:'Alpha',prop_type:'PTS',line:20.5,lean:'OVER'})"),run("gameSelectionKey({player:'Alpha',prop_type:'PTS',line:21.5,lean:'OVER'})"));
+run("addGameLeg('LAL|NYK',gamePageData('LAL|NYK').selections[0].key)");
+assert.equal(run('gameTray().length'),1);
+assert.equal(JSON.parse(storage.get('nba-game-tray')).rows.length,1);
+run("openGamePage('BOS|PHI')");
+assert.equal(run('gameTray().length'),1,'switching games preserves entry');
+run("st.gameTrayDate=null");
+assert.equal(run('gameTray().length'),1,'reload restores saved slate');
+run("st.props[0].OVER_ODDS=-120;st.dataVersion++;st.gameEntry.selectedGame='LAL|NYK'");
+assert.match(run('renderGameEntryView()'),/Price changed/);
+assert.doesNotMatch(run('renderGameEntryView()'),/Combined|\$10 return/);
+run("st.tonight[0].COMMENCE_TIME=new Date(Date.now()-1000).toISOString();st.dataVersion++");
+assert.equal(run("gamePageData('LAL|NYK').candidates.length"),0);
+assert.match(run('renderGameEntryView()'),/Unavailable or started/);
+run("st.gameTray=[];addGameLeg('LAL|NYK',gameSelectionKey({player:'Alpha',prop_type:'PTS',line:20.5,lean:'OVER'}))");
+assert.equal(run('gameTray().length'),0);
+run("st.tonight[0].COMMENCE_TIME='';st.dataVersion++");
+assert.equal(run("gamePageData('LAL|NYK').candidates.length"),0);
+run("st.feedStatus.usable=false");
+assert.match(run('renderGameEntryView()'),/Entry building is paused/);
+assert.match(html,/class="game-open" onclick="openGamePage/);
+console.log('Game page checks passed: isolation, deduplication, signals, persistence, price changes, locked/missing starts, stale feeds.');
